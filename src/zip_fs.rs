@@ -49,10 +49,6 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        for t in a.file_names() {
-            println!("filenames for data zip {:?}", t);
-        }
-
         Some(Box::new(ZipFs { data: Some(a) }))
     }
 
@@ -83,8 +79,6 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        println!("ZipFs {}", url);
-
         let mut data = Vec::new();
         read_file.read_to_end(&mut data).unwrap();
 
@@ -108,7 +102,7 @@ impl VfsDriver for ZipFs {
         let mut output_data = vec![0u8; len];
 
         // if file is small than 10k we just unpack it directly without progress
-        if len < 1000 * 1024 {
+        if len < 10 * 1024 {
             //msg.send(RecvMsg::ReadProgress(0.0))?;
             file.read_to_end(&mut output_data)?;
         } else {
@@ -117,17 +111,19 @@ impl VfsDriver for ZipFs {
             let block_len = len / loop_count;
             let mut percent = 0.0;
             let percent_step = 1.0 / loop_count as f32;
+            let mut total_read_size = 0;
 
-            for i in 0..loop_count {
+            for i in 0..loop_count + 1 {
                 let block_offset = i * block_len;
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
+                total_read_size += read_amount;
                 //msg.send(RecvMsg::ReadProgress(percent))?;
                 percent += percent_step;
             }
-        }
 
-        //send_msg.send(RecvMsg::ReadDone(output_data.into_boxed_slice()))?;
+            println!("Read amount {} total len {}", total_read_size, len);
+        }
 
         Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
     }
