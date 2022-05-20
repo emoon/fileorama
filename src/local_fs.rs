@@ -8,7 +8,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct LocalFs {
     root: PathBuf,
 }
@@ -29,7 +29,7 @@ impl VfsDriver for LocalFs {
     // Supports loading all file extensions
     fn supports_url(&self, path: &str) -> bool {
         // we don't support url style paths like ftp:// http:// etc.
-        !path.contains("://")
+        !path.contains(":/")
     }
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
@@ -46,19 +46,21 @@ impl VfsDriver for LocalFs {
     }
 
     fn create_from_url(&self, path: &str) -> Option<VfsDriverType> {
-        Some(Arc::new(Box::new(LocalFs { root: path.into() })))
+        println!("LocalFs {}", path);
+
+        Some(Box::new(LocalFs { root: path.into() }))
     }
 
     // As above function will always return true this will never be called
-    fn create_from_data(&self, data: Box<[u8]>) -> Option<VfsDriverType> {
+    fn create_from_data(&self, _data: Box<[u8]>) -> Option<VfsDriverType> {
         None
     }
 
     /// Read a file from the local filesystem.
     fn load_url(
-        &self,
+        &mut self,
         path: &str,
-        send_msg: &crossbeam_channel::Sender<RecvMsg>,
+        //send_msg: &crossbeam_channel::Sender<RecvMsg>,
     ) -> Result<RecvMsg, InternalError> {
         let path = self.root.join(path);
 
@@ -78,7 +80,7 @@ impl VfsDriver for LocalFs {
 
         // if file is small than 5 meg we just load it fully directly to memory
         if len < 5 * 1024 * 1024 {
-            send_msg.send(RecvMsg::ReadProgress(0.0))?;
+            //send_msg.send(RecvMsg::ReadProgress(0.0))?;
             file.read_to_end(&mut output_data)?;
         } else {
             // above 5 meg we read in 10 chunks
@@ -91,7 +93,7 @@ impl VfsDriver for LocalFs {
                 let block_offset = i * block_len;
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
-                send_msg.send(RecvMsg::ReadProgress(percent))?;
+                //send_msg.send(RecvMsg::ReadProgress(percent))?;
                 percent += percent_step;
             }
         }

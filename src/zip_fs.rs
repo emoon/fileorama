@@ -1,55 +1,115 @@
-use crate::{InternalError, RecvMsg, VfsDriver, VfsError};
+use crate::{InternalError, Node, RecvMsg, VfsDriver, VfsDriverType, VfsError};
+use log::error;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read, Seek};
+use std::sync::Arc;
+use zip::ZipArchive;
 
-enum ZipData {
-    NoData,
-    Data(Box<[u8]>),
-    Filename(String),
-}
-
+#[derive(Debug)]
 pub struct ZipFs {
-    data: ZipData,
+    data: Option<ZipArchive<Cursor<Box<[u8]>>>>,
 }
 
 impl ZipFs {
     pub fn new() -> ZipFs {
-        ZipFs {
-            data: ZipData::NoData,
-        }
+        ZipFs { data: None }
     }
 }
 
 impl VfsDriver for ZipFs {
+    /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool {
         false
     }
 
-    fn new_from_path(&self, filename: &str) -> Result<Box<dyn VfsDriver>, VfsError> {
-        Ok(Box::new(ZipFs {
-            filename: filename.into(),
-        }))
+    /// If the driver supports a certain url
+    fn supports_url(&self, url: &str) -> bool {
+        // we don't support url style paths like ftp:// http:// etc.
+        !url.contains(":/")
     }
 
-    ///
-    /// Read a file from the local filesystem.
-    /// TODO: Make the 5 meg size configurable
-    fn load_file(
-        &self,
+    // Create a new instance given data. The VfsDriver will take ownership of the data
+    fn create_instance(&self) -> Box<dyn VfsDriver> {
+        Box::new(ZipFs::new())
+    }
+
+    // Get some data in and returns true if driver can be mounted from it
+    fn can_load_from_data(&self, data: &[u8]) -> bool {
+        let c = std::io::Cursor::new(data);
+        ZipArchive::new(c).is_ok()
+    }
+
+    // Create a new instance given data. The VfsDriver will take ownership of the data
+    fn create_from_data(&self, data: Box<[u8]>) -> Option<VfsDriverType> {
+        let a = match ZipArchive::new(std::io::Cursor::new(data)) {
+            Ok(a) => a,
+            Err(e) => {
+                error!("ZipFs Error: {:}", e);
+                return None;
+            }
+        };
+
+        for t in a.file_names() {
+            println!("filenames for data zip {:?}", t);
+        }
+
+        Some(Box::new(ZipFs { data: Some(a) }))
+    }
+
+    // Get some data in and returns true if driver can be mounted from it
+    fn can_load_from_url(&self, url: &str) -> bool {
+        if std::fs::metadata(url).is_err() {
+            return false;
+        }
+
+        let read_file = match File::open(url) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("ZipFs File Error: {:}", e);
+                return false;
+            }
+        };
+
+        zip::ZipArchive::new(read_file).is_ok()
+    }
+
+    /// Used when creating an instance of the driver with a path to load from
+    fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
+        let mut read_file = match File::open(url) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("ZipFs File Error: {:}", e);
+                return None;
+            }
+        };
+
+        println!("ZipFs {}", url);
+
+        let mut data = Vec::new();
+        read_file.read_to_end(&mut data).unwrap();
+
+        self.create_from_data(data.into_boxed_slice())
+    }
+
+    /// Returns a handle which updates the progress and returns the loaded data. This will try to
+    fn load_url(
+        &mut self,
         path: &str,
-        send_msg: &crossbeam_channel::Sender<RecvMsg>,
-    ) -> Result<Box<[u8]>, InternalError> {
-        let read_file = File::open(&self.filename)?;
-        // TODO: We should cache the archive and not reopen it
-        // TODO: Handle error better here
-        let mut archive = zip::ZipArchive::new(read_file).unwrap();
-        let mut file = archive.by_name(path).unwrap();
+        //msg: &crossbeam_channel::Sender<RecvMsg>,
+    ) -> Result<RecvMsg, InternalError> {
+        let archive = self.data.as_mut().unwrap();
+
+        let mut file = match archive.by_name(path) {
+            Err(e) => return Err(InternalError::FileDirNotFound),
+            Ok(f) => f,
+        };
+
         let len = file.size() as usize;
         let mut output_data = vec![0u8; len];
 
         // if file is small than 10k we just unpack it directly without progress
-        if len < 10 * 1024 {
-            send_msg.send(RecvMsg::ReadProgress(0.0))?;
+        if len < 1000 * 1024 {
+            //msg.send(RecvMsg::ReadProgress(0.0))?;
             file.read_to_end(&mut output_data)?;
         } else {
             // above 10k we read in 10 chunks
@@ -62,36 +122,18 @@ impl VfsDriver for ZipFs {
                 let block_offset = i * block_len;
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
-                send_msg.send(RecvMsg::ReadProgress(percent))?;
+                //msg.send(RecvMsg::ReadProgress(percent))?;
                 percent += percent_step;
             }
         }
 
         //send_msg.send(RecvMsg::ReadDone(output_data.into_boxed_slice()))?;
 
-        Ok(output_data.into_boxed_slice())
+        Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
     }
 
-    /// This is used to figure out if a certain mount can be done
-    fn has_entry(&self, path: &str) -> EntryType {
-        // TODO: Fix unwrap
-        let read_file = File::open(&self.filename).unwrap();
-        let mut archive = zip::ZipArchive::new(read_file).unwrap();
-
-        if archive.by_name(path).is_ok() {
-            EntryType::File
-        } else {
-            EntryType::NotFound
-        }
-    }
-
-    // local fs can't decompress anything
-    fn can_decompress(&self, _data: &[u8]) -> bool {
-        false
-    }
-
-    // local fs support any file ext
-    fn supports_file_ext(&self, file_ext: &str) -> bool {
-        file_ext == "zip"
+    // get a file/directory listing for the driver
+    fn get_directory_list(&self, _path: &str) -> Vec<Node> {
+        Vec::new()
     }
 }

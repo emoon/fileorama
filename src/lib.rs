@@ -2,6 +2,7 @@ use crossbeam_channel::{bounded, unbounded};
 use log::*;
 use std::sync::Mutex;
 use thiserror::Error;
+use zip::ZipArchive;
 
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
@@ -10,7 +11,7 @@ use std::thread::{self, current};
 use std::time::Duration;
 
 mod local_fs;
-//mod zip_fs;
+mod zip_fs;
 
 pub enum RecvMsg {
     ReadProgress(f32),
@@ -21,6 +22,8 @@ pub enum RecvMsg {
 
 #[derive(Error, Debug)]
 pub enum InternalError {
+    #[error("File Error)")]
+    FileDirNotFound,
     #[error("File Error)")]
     FileError(#[from] std::io::Error),
     #[error("Send Error")]
@@ -35,7 +38,7 @@ pub enum VfsError {
 }
 
 /// File system implementations must implement this trait
-pub trait VfsDriver: Sync + Send {
+pub trait VfsDriver: std::fmt::Debug {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
     /// If the driver supports a certain url
@@ -52,9 +55,9 @@ pub trait VfsDriver: Sync + Send {
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType>;
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
     fn load_url(
-        &self,
+        &mut self,
         path: &str,
-        msg: &crossbeam_channel::Sender<RecvMsg>,
+        //msg: &crossbeam_channel::Sender<RecvMsg>,
     ) -> Result<RecvMsg, InternalError>;
 
     // get a file/directory listing for the driver
@@ -114,7 +117,7 @@ impl Node {
     }
 }
 
-type VfsDriverType = Arc<Box<dyn VfsDriver>>;
+type VfsDriverType = Box<dyn VfsDriver>;
 
 #[derive(Default)]
 struct VfsState {
@@ -125,7 +128,10 @@ struct VfsState {
 
 impl VfsState {
     fn new() -> VfsState {
-        let drivers: Vec<VfsDriverType> = vec![Arc::new(Box::new(local_fs::LocalFs::new()))];
+        let drivers: Vec<VfsDriverType> = vec![
+            Box::new(zip_fs::ZipFs::new()),
+            Box::new(local_fs::LocalFs::new()),
+        ];
 
         VfsState {
             drivers,
@@ -420,10 +426,14 @@ fn try_loading_test(
     let mut node_index = start_index;
     let mut has_prefix = false;
 
-    let mut path_index = components.len();
+    let path_index = components.len();
+
+    println!("current path {}", current_path);
 
     while !current_path.is_empty() {
         driver = find_driver_for_path(&state.drivers, &current_path);
+
+        println!("driver for path {} {}", current_path, driver.is_some());
 
         if driver.is_some() {
             break;
@@ -437,6 +447,8 @@ fn try_loading_test(
     if let Some(driver) = driver {
         let driver_index = state.node_drivers.len();
         state.node_drivers.push(driver);
+
+        let components = p.components();
 
         for c in components {
             let new_node = Node {
@@ -455,13 +467,229 @@ fn try_loading_test(
     (path_index - level, node_index)
 }
 
-pub(crate) fn load(state: &mut VfsState, path: &str) -> bool {
+#[derive(PartialEq)]
+enum LoadState {
+    FindNode,
+    FindDriverUrl,
+    FindDriverData,
+    LoadFromDriver,
+}
+
+pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
     let mut had_prefix = false;
-    let mut index = 0;
+    let mut node_index = 0;
+
+    // temp
+    //let (main_send, thread_recv) = unbounded::<SendMsg>();
 
     let components: Vec<Component> = Path::new(path).components().collect();
-    let mut i = 0;
+    let comp_len = components.len();
 
+    let mut i = 0;
+    let mut driver_index = None;
+    let mut state = LoadState::FindNode;
+    let mut data: Option<Box<[u8]>> = None;
+
+    loop {
+        match state {
+            // Search for node in the vfs
+            LoadState::FindNode => {
+                // Search for node in the vfs
+                for (t, c) in components[i..].iter().enumerate() {
+                    let node = &vfs.nodes[node_index];
+                    let component_name = get_component_name(&c, &mut had_prefix);
+                    if let Some(entry) = find_entry_in_node(node, &vfs.nodes, &component_name) {
+                        //println!("found entry! {}: {}", component_name, entry);
+                        node_index = entry;
+                        i += 1;
+                        // If we don't have any driver yet and we didn't find a path we must search for a driver
+                    } else if driver_index.is_none() {
+                        state = LoadState::FindDriverUrl;
+                    } else {
+                        state = LoadState::LoadFromDriver;
+                    }
+                }
+            }
+
+            // Walk the url backwards and try to find a driver
+            LoadState::FindDriverUrl => {
+                let mut p: PathBuf = components[i..].iter().collect();
+
+                let mut current_path = p.to_str().unwrap().to_owned();
+                let mut level = 0;
+                let mut driver = None;
+
+                println!("current path {}", current_path);
+
+                while !current_path.is_empty() {
+                    driver = find_driver_for_path(&vfs.drivers, &current_path);
+
+                    println!("driver for path {} {}", current_path, driver.is_some());
+
+                    if driver.is_some() {
+                        break;
+                    }
+
+                    p.pop();
+                    current_path = p.to_str().unwrap().to_owned();
+                    level += 1;
+                }
+
+                if let Some(d) = driver {
+                    // If we found a driver we mount it inside the vfs
+                    let mut current_index = node_index;
+                    let mut prefix = false;
+                    let d_index = vfs.node_drivers.len();
+
+                    driver_index = Some(d_index);
+                    vfs.node_drivers.push(d);
+
+                    let comp = p.components();
+
+                    for c in comp {
+                        let new_node = Node {
+                            node_type: NodeType::Unknown,
+                            parent: current_index as _,
+                            driver_index: d_index as u32,
+                            name: get_component_name(&c, &mut prefix).to_string(),
+                            ..Default::default()
+                        };
+
+                        current_index = add_new_node(vfs, current_index, new_node);
+                    }
+
+                    // Start from the index where the new driver has been mounted
+                    node_index = current_index;
+                    i += comp_len - level;
+
+                    state = LoadState::LoadFromDriver;
+                } else {
+                    // Unable to find a driver to load
+                    return false;
+                }
+            }
+
+            LoadState::FindDriverData => {
+                let mut p: PathBuf = components[i..].iter().collect();
+                let mut current_path = p.to_str().unwrap().to_owned();
+                println!("Searching for {} in data", current_path);
+                let node_data = data.as_ref().unwrap();
+
+                for d in &vfs.drivers {
+                    if !d.can_load_from_data(&node_data) {
+                        continue;
+                    }
+
+                    // TODO: Fix this clone
+                    if let Some(new_driver) = d.create_from_data(node_data.clone()) {
+                        let d_index = vfs.node_drivers.len();
+                        driver_index = Some(d_index);
+                        vfs.node_drivers.push(new_driver);
+
+                        // Update the current node with new driver
+                        vfs.nodes[node_index].driver_index = d_index as _;
+
+                        state = LoadState::LoadFromDriver;
+                    }
+
+                    break;
+                }
+            }
+
+            LoadState::LoadFromDriver => {
+                let mut p: PathBuf = components[i..].iter().collect();
+                let mut current_path = p.to_str().unwrap().to_owned();
+                let d_index = driver_index.unwrap();
+                let d = &mut vfs.node_drivers[d_index];
+
+                println!(">> Lodaing with driver {}", d_index);
+
+                // walkbackwards from the current path and try to load the data
+
+                let mut p: PathBuf = components[i..].iter().collect();
+
+                let mut current_path = p.to_str().unwrap().to_owned();
+                let mut level = 0;
+
+                println!("current path {}", current_path);
+
+                while !current_path.is_empty() {
+                    match d.load_url(&current_path) {
+                        Err(e) => {
+                            println!("{:?}", e);
+                            //return false;
+                        }
+
+                        Ok(msg) => {
+                            match msg {
+                                RecvMsg::IsDirectory(_) => {
+                                    println!("path is dir {}", current_path);
+                                    // TODO: Insert into tree
+                                    return true;
+                                }
+
+                                RecvMsg::ReadDone(in_data) => {
+                                    println!("Read data to memory: {}", current_path);
+                                    // if level is 0 then we are done, otherwise we have to continue
+                                    // TODO: If user has "scan" on data we need to continue here as well
+                                    if level == 0 {
+                                        return true;
+                                    } else {
+                                        let comp = p.components();
+                                        let mut current_index = node_index;
+                                        let mut prefix = false;
+                                        let mut count = 0;
+
+                                        for c in comp {
+                                            let new_node = Node {
+                                                node_type: NodeType::Unknown,
+                                                parent: current_index as _,
+                                                driver_index: d_index as u32,
+                                                name: get_component_name(&c, &mut prefix)
+                                                    .to_string(),
+                                                ..Default::default()
+                                            };
+
+                                            current_index =
+                                                add_new_node(vfs, current_index, new_node);
+                                            count += 1;
+                                        }
+
+                                        node_index = current_index;
+                                        i += count;
+
+                                        // Add new nodes to the vfs
+                                        data = Some(in_data);
+                                        state = LoadState::FindDriverData;
+                                        break;
+                                    }
+                                }
+
+                                _ => (),
+                            }
+                        }
+                    }
+
+                    p.pop();
+                    current_path = p.to_str().unwrap().to_owned();
+                    level += 1;
+                }
+
+                if current_path.is_empty() && state == LoadState::LoadFromDriver {
+                    println!("Unable to find url that was searched for");
+                    return false;
+                }
+
+                //return true;
+            }
+        }
+
+        //let component = components[i];
+        //let component_name = get_component_name(&component, &mut had_prefix);
+        //let node = &state.nodes[index];
+    }
+
+    /*
     loop {
         let component = components[i];
         let component_name = get_component_name(&component, &mut had_prefix);
@@ -472,14 +700,67 @@ pub(crate) fn load(state: &mut VfsState, path: &str) -> bool {
             index = entry;
             i += 1;
         } else {
-            (i, index) = try_loading_test(state, index, &components[i..]);
-            return true;
+            let mut p: PathBuf = components[i..].iter().collect();
+
+            let mut current_path = p.to_str().unwrap().to_owned();
+            let mut driver = None;
+            let mut level = 0;
+            let mut node_index = start_index;
+
+            let path_index = components.len();
+
+            println!("current path {}", current_path);
+
+            while !current_path.is_empty() {
+                driver = find_driver_for_path(&state.drivers, &current_path);
+
+                println!("driver for path {} {}", current_path, driver.is_some());
+
+                if driver.is_some() {
+                    break;
+                }
+
+                p.pop();
+                current_path = p.to_str().unwrap().to_owned();
+                level += 1;
+            }
+
+            if let Some(driver) = driver {
+                let driver_index = state.node_drivers.len();
+                state.node_drivers.push(driver);
+
+                let components = p.components();
+
+                for c in components {
+                    let new_node = Node {
+                        node_type: NodeType::Unknown,
+                        parent: node_index as _,
+                        driver_index: driver_index as u32,
+                        name: get_component_name(&c, &mut has_prefix).to_string(),
+                        ..Default::default()
+                    };
+
+                    node_index = add_new_node(state, node_index, new_node);
+                }
+            }
+
+            // return the next level to process the path at
+            (path_index - level, node_index)
+
+            /*
+            let t = try_loading_test(state, index, &components[i..]);
+            i += t.0;
+            index = t.1;
+
+            println!("{} {} len {}", i, index, components.len());
+            */
         }
 
         if i == components.len() {
             break;
         }
     }
+    */
 
     true
 }
@@ -557,13 +838,20 @@ mod tests {
     fn print_tree(state: &VfsState, index: u32, parent: u32, indent: usize) {
         let node = &state.nodes[index as usize];
 
-        println!("{:indent$} {}", "", node.name, indent = indent);
+        println!(
+            "{:indent$} {} driver {}",
+            "",
+            node.name,
+            node.driver_index,
+            indent = indent
+        );
 
         for n in &node.nodes {
             print_tree(state, *n, node.parent, indent + 1);
         }
     }
 
+    /*
     #[test]
     fn vfs_state_load_local() {
         let mut state = VfsState::new();
@@ -571,6 +859,19 @@ mod tests {
         load(&mut state, &path.to_string_lossy());
 
         let path = std::fs::canonicalize("Cargo.lock").unwrap();
+        load(&mut state, &path.to_string_lossy());
+
+        print_tree(&state, 0, 0, 0);
+    }
+    */
+
+    #[test]
+    fn vfs_state_load_zip() {
+        let mut state = VfsState::new();
+        let mut path = std::fs::canonicalize("data/a.zip").unwrap();
+        path = path.join("beat.zip/foo/6beat.mod");
+        println!("{:?}", path);
+
         load(&mut state, &path.to_string_lossy());
 
         print_tree(&state, 0, 0, 0);
