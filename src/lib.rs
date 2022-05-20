@@ -57,7 +57,7 @@ pub trait VfsDriver: std::fmt::Debug {
     fn load_url(
         &mut self,
         path: &str,
-        //msg: &crossbeam_channel::Sender<RecvMsg>,
+        msg: &crossbeam_channel::Sender<RecvMsg>,
     ) -> Result<RecvMsg, InternalError>;
 
     // get a file/directory listing for the driver
@@ -154,7 +154,7 @@ impl Vfs {
     /// (given if it has a file listing) and that will be returned until a file is encountered. If there are
     /// no files an error will/archive will be returned instead and the user code has to handle it
     pub fn load_url(&self, path: &str) -> Handle {
-        let (thread_send, main_recv) = bounded::<RecvMsg>(1);
+        let (thread_send, main_recv) = unbounded::<RecvMsg>();
 
         self.main_send
             .send(SendMsg::LoadUrl(path.into(), 0, thread_send))
@@ -251,7 +251,11 @@ enum LoadState {
 /// 4. As we haven't fully resolved the full path yet, we will from this point search backwards again again with foo.zip
 ///    trying to resolve "foo.zip/test/bar.mod" which should succede in this case.
 ///    We repeat this process until everthing we are done.
-pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
+pub(crate) fn load(
+    vfs: &mut VfsState,
+    path: &str,
+    msg: &crossbeam_channel::Sender<RecvMsg>,
+) -> bool {
     let mut had_prefix = false;
     let mut node_index = 0;
 
@@ -346,29 +350,33 @@ pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
             }
 
             LoadState::FindDriverData => {
-                let mut p: PathBuf = components[i..].iter().collect();
-                let mut current_path = p.to_str().unwrap().to_owned();
-                println!("Searching for {} in data", current_path);
                 let node_data = data.as_ref().unwrap();
+                let mut found_driver = true;
 
                 for d in &vfs.drivers {
-                    if !d.can_load_from_data(&node_data) {
+                    if !d.can_load_from_data(node_data) {
                         continue;
                     }
 
                     // TODO: Fix this clone
+                    // Found a driver for this data. Updated the node index with the new driver
+                    // and switch state to load that from the new driver
                     if let Some(new_driver) = d.create_from_data(node_data.clone()) {
                         let d_index = vfs.node_drivers.len();
                         driver_index = Some(d_index);
                         vfs.node_drivers.push(new_driver);
-
-                        // Update the current node with new driver
                         vfs.nodes[node_index].driver_index = d_index as _;
-
                         state = LoadState::LoadFromDriver;
+                        found_driver = true;
+                        break;
                     }
+                }
 
-                    break;
+                // No driver found data. So we just send it back here
+                // TODO: Implement scanning here
+                if !found_driver {
+                    msg.send(RecvMsg::ReadDone(node_data.clone())).unwrap();
+                    return true;
                 }
             }
 
@@ -390,14 +398,14 @@ pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
                 println!("current path {}", current_path);
 
                 while !current_path.is_empty() {
-                    match d.load_url(&current_path) {
+                    match d.load_url(&current_path, msg) {
                         Err(e) => {
                             println!("{:?}", e);
                             //return false;
                         }
 
-                        Ok(msg) => {
-                            match msg {
+                        Ok(load_msg) => {
+                            match load_msg {
                                 RecvMsg::IsDirectory(_) => {
                                     println!("path is dir {}", current_path);
                                     // TODO: Insert into tree
@@ -409,6 +417,8 @@ pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
                                     // if level is 0 then we are done, otherwise we have to continue
                                     // TODO: If user has "scan" on data we need to continue here as well
                                     if level == 0 {
+                                        // TODO: Handle error
+                                        msg.send(RecvMsg::ReadDone(in_data)).unwrap();
                                         return true;
                                     } else {
                                         let comp = p.components();
@@ -464,18 +474,12 @@ pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
     true
 }
 
-/*
-fn handle_msg(state: &mut VfsState, _name: &str, msg: &SendMsg) {
+fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg) {
     match msg {
-        SendMsg::LoadUrl(path, node_index, msg) => {
+        SendMsg::LoadUrl(path, _node_index, msg) => {
             let p = Path::new(path);
 
-            match is_path_in_tree(state, *node_index, p) {
-                NodeInTree::NotFound => load_new_url(state, p, path),
-                NodeInTree::Complete(_index) => unimplemented!(),
-                NodeInTree::Incomplete(_index) => unimplemented!(),
-            }
-
+            load(vfs, path, msg);
             /*
 
             // TODO: Support parsing the url in sub-chunks i.e mydir/foo.zip/dir/foo.rar/file
@@ -496,7 +500,6 @@ fn handle_msg(state: &mut VfsState, _name: &str, msg: &SendMsg) {
         }
     }
 }
-*/
 
 impl Vfs {
     //pub fn new(vfs_drivers: Option<&[Box<dyn VfsDriver>]>) -> Vfs {
@@ -512,11 +515,9 @@ impl Vfs {
             .spawn(move || {
                 let mut state = VfsState::new();
 
-                /*
                 while let Ok(msg) = thread_recv_0.recv() {
                     handle_msg(&mut state, "vfs_worker", &msg);
                 }
-                 */
             })
             .unwrap();
 
@@ -534,6 +535,7 @@ impl Default for Vfs {
 mod tests {
     use super::*;
 
+    /*
     fn print_tree(state: &VfsState, index: u32, parent: u32, indent: usize) {
         let node = &state.nodes[index as usize];
 
@@ -549,6 +551,7 @@ mod tests {
             print_tree(state, *n, node.parent, indent + 1);
         }
     }
+     */
 
     /*
     #[test]
@@ -566,14 +569,26 @@ mod tests {
 
     #[test]
     fn vfs_state_load_zip() {
-        let mut state = VfsState::new();
         let mut path = std::fs::canonicalize("data/a.zip").unwrap();
         path = path.join("beat.zip/foo/6beat.mod");
-        println!("{:?}", path);
 
-        load(&mut state, &path.to_string_lossy());
+        let vfs = Vfs::new();
+        let handle = vfs.load_url(&path.to_string_lossy());
 
-        print_tree(&state, 0, 0, 0);
+        match handle.recv.recv() {
+            Ok(msg) => match msg {
+                RecvMsg::ReadDone(data) => {
+                    println!("Got data {} ", data.len());
+                }
+                RecvMsg::ReadProgress(_) => todo!(),
+                RecvMsg::Error(_) => todo!(),
+                RecvMsg::IsDirectory(_) => todo!(),
+            },
+            Err(e) => panic!("{:?}", e),
+        }
+
+        //load(&mut state, &path.to_string_lossy());
+        //print_tree(&state, 0, 0, 0);
     }
 
     /*

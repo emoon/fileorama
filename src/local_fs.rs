@@ -60,7 +60,7 @@ impl VfsDriver for LocalFs {
     fn load_url(
         &mut self,
         path: &str,
-        //send_msg: &crossbeam_channel::Sender<RecvMsg>,
+        send_msg: &crossbeam_channel::Sender<RecvMsg>,
     ) -> Result<RecvMsg, InternalError> {
         let path = self.root.join(path);
 

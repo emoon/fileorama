@@ -89,7 +89,7 @@ impl VfsDriver for ZipFs {
     fn load_url(
         &mut self,
         path: &str,
-        //msg: &crossbeam_channel::Sender<RecvMsg>,
+        msg: &crossbeam_channel::Sender<RecvMsg>,
     ) -> Result<RecvMsg, InternalError> {
         let archive = self.data.as_mut().unwrap();
 
