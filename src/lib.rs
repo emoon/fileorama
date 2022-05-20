@@ -165,8 +165,6 @@ impl Vfs {
 }
 
 pub enum SendMsg {
-    // TODO: Proper error
-    /// Send messages
     LoadUrl(String, u32, crossbeam_channel::Sender<RecvMsg>),
 }
 
@@ -179,37 +177,6 @@ fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
                 file_error, send_err
             );
         }
-    }
-}
-
-enum NodeInTree {
-    NotFound,
-    Incomplete(usize),
-    Complete(usize),
-}
-
-fn is_path_in_tree(state: &VfsState, start_index: u32, path: &Path) -> NodeInTree {
-    let comp = path.components();
-    let mut index = start_index as usize;
-    let nodes = &state.nodes;
-
-    for component in comp {
-        let node = &nodes[index];
-
-        if let Component::Normal(p) = component {
-            if let Some(found_index) = find_entry_in_node(node, nodes, &p.to_string_lossy()) {
-                index = found_index;
-            } else {
-                // return the index where the search stopped within the tree
-                return NodeInTree::Incomplete(index);
-            }
-        }
-    }
-
-    if start_index == 0 {
-        NodeInTree::NotFound
-    } else {
-        NodeInTree::Complete(index)
     }
 }
 
@@ -228,93 +195,6 @@ fn find_driver_for_path(drivers: &[VfsDriverType], path: &str) -> Option<VfsDriv
     None
 }
 
-fn add_path_to_vfs(state: &mut VfsState, path: &str, driver: VfsDriverType) {}
-
-/// Loading of urls works in the following way:
-/// 1. First we start with the full urls for example: ftp://dir/foo.zip/test/bar.mod
-/// 2. We try to load the url as is. In this case it will fail as only ftp://dir/foo.zip is present on the ftp server
-/// 3. We now search backwards until we get get a file loaded (in this case ftp://dir/foo.zip)
-/// 4. As we haven't fully resolved the full path yet, we will from this point search backwards again again with foo.zip
-///    trying to resolve "foo.zip/test/bar.mod" which should succede in this case.
-///    We repeat this process until everthing we are done.
-
-fn load_new_url(state: &mut VfsState, path: &Path, str_path: &str) -> bool {
-    let mut p = path.to_path_buf();
-    let mut current_path = p.to_str().unwrap().to_owned();
-    let mut driver = None;
-
-    while !current_path.is_empty() {
-        driver = find_driver_for_path(&state.drivers, &current_path);
-
-        if driver.is_some() {
-            break;
-        }
-
-        p.pop();
-        current_path = p.to_str().unwrap().to_owned();
-    }
-
-    // Unable to load this path
-    if current_path.is_empty() {
-        return false;
-    }
-
-    true
-}
-
-/// We have a separate function for getting a root as this doesn't exist in Path. Returns
-/// the starting of the relative paths
-/*
-fn get_root(path: &str) -> Option<usize> {
-    // if we have internet style url just return that
-    if let Some(url) = path.find("://") {
-        return Some(url + 3);
-    }
-
-    let mut path = Path::new(path).components();
-
-    match path.next() {
-        // if we are here it means that we didn't encounter a Windows style prefix and assume it's unix style
-        Some(Component::RootDir) => Some(1),
-        Some(Component::Prefix(t)) => Some(t.as_os_str().len()),
-        _ => None,
-    }
-}
-*/
-
-/// Loading of urls works in the following way:
-/// 1. First we start with the full urls for example: ftp://dir/foo.zip/test/bar.mod
-/// 2. We try to load the url as is. In this case it will fail as only ftp://dir/foo.zip is present on the ftp server
-/// 3. We now search backwards until we get get a file loaded (in this case ftp://dir/foo.zip)
-/// 4. As we haven't fully resolved the full path yet, we will from this point search backwards again again with foo.zip
-///    trying to resolve "foo.zip/test/bar.mod" which should succede in this case.
-///    We repeat this process until everthing we are done.
-
-fn try_loading(
-    state: &mut VfsState,
-    node_index: usize,
-    path_index: usize,
-    components: &[Component],
-) {
-    let mut driver;
-    // Construct the full path given the current node index
-    let mut p: PathBuf = components.iter().collect();
-
-    // if we aren't at node
-    driver = &state.node_drivers[state.nodes[node_index].driver_index as usize];
-
-    let mut current_path = p.to_str().unwrap().to_owned();
-
-    /*
-    while !current_path.is_empty() {
-        if driver.load_url(&current_path) {}
-
-        p.pop();
-        current_path = p.to_str().unwrap().to_owned();
-    }
-    */
-}
-
 // TODO: uses a hashmap instead?
 fn find_entry_in_node(node: &Node, nodes: &[Node], name: &str) -> Option<usize> {
     for n in &node.nodes {
@@ -326,62 +206,6 @@ fn find_entry_in_node(node: &Node, nodes: &[Node], name: &str) -> Option<usize> 
     }
 
     None
-}
-
-/// Loading of urls works in the following way:
-/// 1. First we start with the full urls for example: ftp://dir/foo.zip/test/bar.mod
-/// 2. We try to load the url as is. In this case it will fail as only ftp://dir/foo.zip is present on the ftp server
-/// 3. We now search backwards until we get get a file loaded (in this case ftp://dir/foo.zip)
-/// 4. As we haven't fully resolved the full path yet, we will from this point search backwards again again with foo.zip
-///    trying to resolve "foo.zip/test/bar.mod" which should succede in this case.
-///    We repeat this process until everthing we are done.
-pub(crate) fn load_url_internal(state: &mut VfsState, path: &str) -> bool {
-    let had_prefix = false;
-    let mut index = 0;
-
-    let comp: Vec<Component> = Path::new(path).components().collect();
-
-    for (i, c) in comp.iter().enumerate() {
-        match c {
-            Component::RootDir => {
-                if !had_prefix {
-                    let node = &state.nodes[index];
-                    // Check if the path exists in the tree, if so we go on searching
-                    if let Some(entry) = find_entry_in_node(node, &state.nodes, "/") {
-                        index = entry;
-                    } else {
-                        // this path was not found in the vfs, so we need to try loading it
-                        //try_loading(state, index, &comp[i..]);
-                    }
-                }
-            }
-
-            Component::Prefix(t) => {
-                let prefix_name = t.as_os_str().to_string_lossy();
-                let node = &state.nodes[index];
-                // Check if the path exists in the tree, if so we go on searching
-                if let Some(entry) = find_entry_in_node(node, &state.nodes, &prefix_name) {
-                    index = entry;
-                } else {
-                    // this path was not found in the vfs, so we need to try loading it
-                }
-            }
-
-            Component::Normal(t) => {
-                let node = &state.nodes[index];
-                // Check if the path exists in the tree, if so we go on searching
-                if let Some(entry) = find_entry_in_node(node, &state.nodes, &t.to_string_lossy()) {
-                    index = entry;
-                } else {
-                    // this path was not found in the vfs, so we need to try loading it
-                }
-            }
-
-            e => unimplemented!("{:?}", e),
-        }
-    }
-
-    true
 }
 
 fn get_component_name<'a>(component: &'a Component, had_prefix: &mut bool) -> Cow<'a, str> {
@@ -412,61 +236,6 @@ fn add_new_node(state: &mut VfsState, index: usize, new_node: Node) -> usize {
     new_index
 }
 
-/// Walk backwards until we can load a path.
-fn try_loading_test(
-    state: &mut VfsState,
-    start_index: usize,
-    components: &[Component],
-) -> (usize, usize) {
-    let mut p: PathBuf = components.iter().collect();
-
-    let mut current_path = p.to_str().unwrap().to_owned();
-    let mut driver = None;
-    let mut level = 0;
-    let mut node_index = start_index;
-    let mut has_prefix = false;
-
-    let path_index = components.len();
-
-    println!("current path {}", current_path);
-
-    while !current_path.is_empty() {
-        driver = find_driver_for_path(&state.drivers, &current_path);
-
-        println!("driver for path {} {}", current_path, driver.is_some());
-
-        if driver.is_some() {
-            break;
-        }
-
-        p.pop();
-        current_path = p.to_str().unwrap().to_owned();
-        level += 1;
-    }
-
-    if let Some(driver) = driver {
-        let driver_index = state.node_drivers.len();
-        state.node_drivers.push(driver);
-
-        let components = p.components();
-
-        for c in components {
-            let new_node = Node {
-                node_type: NodeType::Unknown,
-                parent: node_index as _,
-                driver_index: driver_index as u32,
-                name: get_component_name(&c, &mut has_prefix).to_string(),
-                ..Default::default()
-            };
-
-            node_index = add_new_node(state, node_index, new_node);
-        }
-    }
-
-    // return the next level to process the path at
-    (path_index - level, node_index)
-}
-
 #[derive(PartialEq)]
 enum LoadState {
     FindNode,
@@ -475,6 +244,13 @@ enum LoadState {
     LoadFromDriver,
 }
 
+/// Loading of urls works in the following way:
+/// 1. First we start with the full urls for example: ftp://dir/foo.zip/test/bar.mod
+/// 2. We try to load the url as is. In this case it will fail as only ftp://dir/foo.zip is present on the ftp server
+/// 3. We now search backwards until we get get a file loaded (in this case ftp://dir/foo.zip)
+/// 4. As we haven't fully resolved the full path yet, we will from this point search backwards again again with foo.zip
+///    trying to resolve "foo.zip/test/bar.mod" which should succede in this case.
+///    We repeat this process until everthing we are done.
 pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
     let mut had_prefix = false;
     let mut node_index = 0;
@@ -683,84 +459,7 @@ pub(crate) fn load(vfs: &mut VfsState, path: &str) -> bool {
                 //return true;
             }
         }
-
-        //let component = components[i];
-        //let component_name = get_component_name(&component, &mut had_prefix);
-        //let node = &state.nodes[index];
     }
-
-    /*
-    loop {
-        let component = components[i];
-        let component_name = get_component_name(&component, &mut had_prefix);
-        let node = &state.nodes[index];
-
-        if let Some(entry) = find_entry_in_node(node, &state.nodes, &component_name) {
-            println!("found entry! {}: {}", component_name, entry);
-            index = entry;
-            i += 1;
-        } else {
-            let mut p: PathBuf = components[i..].iter().collect();
-
-            let mut current_path = p.to_str().unwrap().to_owned();
-            let mut driver = None;
-            let mut level = 0;
-            let mut node_index = start_index;
-
-            let path_index = components.len();
-
-            println!("current path {}", current_path);
-
-            while !current_path.is_empty() {
-                driver = find_driver_for_path(&state.drivers, &current_path);
-
-                println!("driver for path {} {}", current_path, driver.is_some());
-
-                if driver.is_some() {
-                    break;
-                }
-
-                p.pop();
-                current_path = p.to_str().unwrap().to_owned();
-                level += 1;
-            }
-
-            if let Some(driver) = driver {
-                let driver_index = state.node_drivers.len();
-                state.node_drivers.push(driver);
-
-                let components = p.components();
-
-                for c in components {
-                    let new_node = Node {
-                        node_type: NodeType::Unknown,
-                        parent: node_index as _,
-                        driver_index: driver_index as u32,
-                        name: get_component_name(&c, &mut has_prefix).to_string(),
-                        ..Default::default()
-                    };
-
-                    node_index = add_new_node(state, node_index, new_node);
-                }
-            }
-
-            // return the next level to process the path at
-            (path_index - level, node_index)
-
-            /*
-            let t = try_loading_test(state, index, &components[i..]);
-            i += t.0;
-            index = t.1;
-
-            println!("{} {} len {}", i, index, components.len());
-            */
-        }
-
-        if i == components.len() {
-            break;
-        }
-    }
-    */
 
     true
 }
