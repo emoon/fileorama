@@ -1,8 +1,7 @@
-use crate::{InternalError, Node, RecvMsg, VfsDriver, VfsDriverType, VfsError};
+use crate::{InternalError, Node, Progress, RecvMsg, VfsDriver, VfsDriverType};
 use log::error;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek};
-use std::sync::Arc;
+use std::io::{Cursor, Read};
 use zip::ZipArchive;
 
 #[derive(Debug)]
@@ -86,15 +85,11 @@ impl VfsDriver for ZipFs {
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(
-        &mut self,
-        path: &str,
-        msg: &crossbeam_channel::Sender<RecvMsg>,
-    ) -> Result<RecvMsg, InternalError> {
+    fn load_url(&mut self, path: &str, progress: &Progress) -> Result<RecvMsg, InternalError> {
         let archive = self.data.as_mut().unwrap();
 
         let mut file = match archive.by_name(path) {
-            Err(e) => return Err(InternalError::FileDirNotFound),
+            Err(_) => return Err(InternalError::FileDirNotFound),
             Ok(f) => f,
         };
 
@@ -103,7 +98,7 @@ impl VfsDriver for ZipFs {
 
         // if file is small than 10k we just unpack it directly without progress
         if len < 10 * 1024 {
-            //msg.send(RecvMsg::ReadProgress(0.0))?;
+            progress.update(0.0);
             file.read_to_end(&mut output_data)?;
         } else {
             // above 10k we read in 10 chunks
@@ -118,13 +113,12 @@ impl VfsDriver for ZipFs {
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
                 total_read_size += read_amount;
-                //msg.send(RecvMsg::ReadProgress(percent))?;
+                progress.update(percent);
                 percent += percent_step;
             }
-
-            println!("Read amount {} total len {}", total_read_size, len);
         }
 
+        progress.update(1.0);
         Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
     }
 

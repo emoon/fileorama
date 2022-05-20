@@ -1,4 +1,4 @@
-use crate::{InternalError, Node, RecvMsg, VfsDriver, VfsDriverType, VfsError};
+use crate::{InternalError, Node, Progress, RecvMsg, VfsDriver, VfsDriverType, VfsError};
 use log::trace;
 use std::{
     fs::File,
@@ -57,14 +57,8 @@ impl VfsDriver for LocalFs {
     }
 
     /// Read a file from the local filesystem.
-    fn load_url(
-        &mut self,
-        path: &str,
-        send_msg: &crossbeam_channel::Sender<RecvMsg>,
-    ) -> Result<RecvMsg, InternalError> {
+    fn load_url(&mut self, path: &str, progress: &Progress) -> Result<RecvMsg, InternalError> {
         let path = self.root.join(path);
-
-        println!("{:?}", path);
 
         let metadata = std::fs::metadata(&path)?;
 
@@ -80,7 +74,7 @@ impl VfsDriver for LocalFs {
 
         // if file is small than 5 meg we just load it fully directly to memory
         if len < 5 * 1024 * 1024 {
-            //send_msg.send(RecvMsg::ReadProgress(0.0))?;
+            progress.update(0.0);
             file.read_to_end(&mut output_data)?;
         } else {
             // above 5 meg we read in 10 chunks
@@ -93,10 +87,12 @@ impl VfsDriver for LocalFs {
                 let block_offset = i * block_len;
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
-                //send_msg.send(RecvMsg::ReadProgress(percent))?;
+                progress.update(percent);
                 percent += percent_step;
             }
         }
+
+        progress.update(1.0);
 
         Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
     }

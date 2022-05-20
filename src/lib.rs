@@ -1,14 +1,10 @@
-use crossbeam_channel::{bounded, unbounded};
+use crossbeam_channel::unbounded;
 use log::*;
-use std::sync::Mutex;
 use thiserror::Error;
-use zip::ZipArchive;
 
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use std::thread::{self, current};
-use std::time::Duration;
+use std::thread::{self};
 
 mod local_fs;
 mod zip_fs;
@@ -37,8 +33,13 @@ pub enum VfsError {
     FileError(#[from] std::io::Error),
 }
 
+pub(crate) struct Progress<'a> {
+    range: (f32, f32),
+    msg: &'a crossbeam_channel::Sender<RecvMsg>,
+}
+
 /// File system implementations must implement this trait
-pub trait VfsDriver: std::fmt::Debug {
+pub(crate) trait VfsDriver: std::fmt::Debug {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
     /// If the driver supports a certain url
@@ -54,12 +55,7 @@ pub trait VfsDriver: std::fmt::Debug {
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType>;
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(
-        &mut self,
-        path: &str,
-        msg: &crossbeam_channel::Sender<RecvMsg>,
-    ) -> Result<RecvMsg, InternalError>;
-
+    fn load_url(&mut self, path: &str, progress: &Progress) -> Result<RecvMsg, InternalError>;
     // get a file/directory listing for the driver
     fn get_directory_list(&self, path: &str) -> Vec<Node>;
 }
@@ -73,6 +69,22 @@ pub enum VfsType {
     Remote,
     //
     Streaming,
+}
+
+impl<'a> Progress<'a> {
+    pub fn update(&'a self, v: f32) -> Result<(), InternalError> {
+        let f = v.clamp(0.0, 1.0);
+        let res = self.range.0 + f * (self.range.1 - self.range.0);
+        self.msg.send(RecvMsg::ReadProgress(res))?;
+        Ok(())
+    }
+
+    fn new(start: f32, end: f32, msg: &crossbeam_channel::Sender<RecvMsg>) -> Progress {
+        Progress {
+            range: (start, end),
+            msg,
+        }
+    }
 }
 
 pub enum NodeType {
@@ -92,17 +104,17 @@ impl Default for NodeType {
 // TODO: Move bunch of data out to arrays to reduce reallocs
 #[derive(Default)]
 pub struct Node {
-    node_type: NodeType,
+    _node_type: NodeType,
     name: String,
     driver_index: u32,
-    parent: u32,
+    _parent: u32,
     nodes: Vec<u32>,
 }
 
 impl Node {
     fn new_directory_node(name: &str) -> Node {
         Node {
-            node_type: NodeType::Directory,
+            _node_type: NodeType::Directory,
             name: name.to_owned(),
             ..Default::default()
         }
@@ -110,7 +122,7 @@ impl Node {
 
     fn new_file_node(name: &str) -> Node {
         Node {
-            node_type: NodeType::File,
+            _node_type: NodeType::File,
             name: name.to_owned(),
             ..Default::default()
         }
@@ -277,9 +289,8 @@ pub(crate) fn load(
                 // Search for node in the vfs
                 for (t, c) in components[i..].iter().enumerate() {
                     let node = &vfs.nodes[node_index];
-                    let component_name = get_component_name(&c, &mut had_prefix);
+                    let component_name = get_component_name(c, &mut had_prefix);
                     if let Some(entry) = find_entry_in_node(node, &vfs.nodes, &component_name) {
-                        //println!("found entry! {}: {}", component_name, entry);
                         node_index = entry;
                         i += 1;
                         // If we don't have any driver yet and we didn't find a path we must search for a driver
@@ -328,8 +339,8 @@ pub(crate) fn load(
 
                     for c in comp {
                         let new_node = Node {
-                            node_type: NodeType::Unknown,
-                            parent: current_index as _,
+                            _node_type: NodeType::Unknown,
+                            _parent: current_index as _,
                             driver_index: d_index as u32,
                             name: get_component_name(&c, &mut prefix).to_string(),
                             ..Default::default()
@@ -381,8 +392,6 @@ pub(crate) fn load(
             }
 
             LoadState::LoadFromDriver => {
-                let mut p: PathBuf = components[i..].iter().collect();
-                let mut current_path = p.to_str().unwrap().to_owned();
                 let d_index = driver_index.unwrap();
                 let d = &mut vfs.node_drivers[d_index];
 
@@ -391,14 +400,15 @@ pub(crate) fn load(
                 // walkbackwards from the current path and try to load the data
 
                 let mut p: PathBuf = components[i..].iter().collect();
-
                 let mut current_path = p.to_str().unwrap().to_owned();
                 let mut level = 0;
 
                 println!("current path {}", current_path);
 
                 while !current_path.is_empty() {
-                    match d.load_url(&current_path, msg) {
+                    // TODO: Fix range
+                    let progress = Progress::new(0.0, 1.0, msg);
+                    match d.load_url(&current_path, &progress) {
                         Err(e) => {
                             println!("{:?}", e);
                             //return false;
@@ -428,8 +438,8 @@ pub(crate) fn load(
 
                                         for c in comp {
                                             let new_node = Node {
-                                                node_type: NodeType::Unknown,
-                                                parent: current_index as _,
+                                                _node_type: NodeType::Unknown,
+                                                _parent: current_index as _,
                                                 driver_index: d_index as u32,
                                                 name: get_component_name(&c, &mut prefix)
                                                     .to_string(),
@@ -470,8 +480,6 @@ pub(crate) fn load(
             }
         }
     }
-
-    true
 }
 
 fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg) {
@@ -506,16 +514,13 @@ impl Vfs {
     pub fn new() -> Vfs {
         let (main_send, thread_recv) = unbounded::<SendMsg>();
 
-        //let state = Arc::new(Mutex::new(vfs_state));
-        let thread_recv_0 = thread_recv.clone();
-
         // Setup worker thread
         thread::Builder::new()
             .name("vfs_worker".to_string())
             .spawn(move || {
                 let mut state = VfsState::new();
 
-                while let Ok(msg) = thread_recv_0.recv() {
+                while let Ok(msg) = thread_recv.recv() {
                     handle_msg(&mut state, "vfs_worker", &msg);
                 }
             })
@@ -580,7 +585,7 @@ mod tests {
                 RecvMsg::ReadDone(data) => {
                     println!("Got data {} ", data.len());
                 }
-                RecvMsg::ReadProgress(_) => todo!(),
+                RecvMsg::ReadProgress(_) => (),
                 RecvMsg::Error(_) => todo!(),
                 RecvMsg::IsDirectory(_) => todo!(),
             },
