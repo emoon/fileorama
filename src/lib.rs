@@ -202,6 +202,7 @@ fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
     }
 }
 
+/*
 fn find_driver_for_path(drivers: &[VfsDriverType], path: &str) -> Option<VfsDriverType> {
     for d in drivers {
         if d.supports_url(path) {
@@ -216,6 +217,7 @@ fn find_driver_for_path(drivers: &[VfsDriverType], path: &str) -> Option<VfsDriv
 
     None
 }
+*/
 
 // TODO: uses a hashmap instead?
 fn find_entry_in_node(node: &Node, nodes: &[Node], name: &str) -> Option<usize> {
@@ -354,21 +356,28 @@ impl<'a> Loader<'a> {
         println!("current path {}", current_path);
 
         while !current_path.is_empty() {
-            let driver = find_driver_for_path(&vfs.drivers, &current_path);
+            for d in &vfs.drivers {
+                if !d.supports_url(&current_path) {
+                    continue;
+                }
 
-            println!("driver for path {} {}", current_path, driver.is_some());
+                // Check if we can from this url
+                if !d.can_load_from_url(&current_path) {
+                    continue;
+                }
 
-            if let Some(d) = driver {
-                // If we found a driver we mount it inside the vfs
-                self.driver_index = vfs.node_drivers.len();
-                vfs.node_drivers.push(d);
+                if let Some(new_driver) = d.create_from_url(&current_path) {
+                    // If we found a driver we mount it inside the vfs
+                    self.driver_index = vfs.node_drivers.len();
+                    vfs.node_drivers.push(new_driver);
 
-                let res = add_path_to_vfs(vfs, self.node_index, self.driver_index as _, &p);
-                self.node_index = res.0;
-                self.component_index += res.1;
-                self.state = LoadState::LoadFromDriver;
+                    let res = add_path_to_vfs(vfs, self.node_index, self.driver_index as _, &p);
+                    self.node_index = res.0;
+                    self.component_index += res.1;
+                    self.state = LoadState::LoadFromDriver;
 
-                return;
+                    return;
+                }
             }
 
             p.pop();
@@ -426,7 +435,7 @@ impl<'a> Loader<'a> {
 
         while !current_path.is_empty() {
             // TODO: Fix range
-            let mut progress = Progress::new(0.0, 1.0, &self.msg);
+            let mut progress = Progress::new(0.0, 1.0, self.msg);
             let load_msg =
                 vfs.node_drivers[self.driver_index].load_url(&current_path, &mut progress)?;
 
