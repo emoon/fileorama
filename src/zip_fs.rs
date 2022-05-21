@@ -2,6 +2,7 @@ use crate::{InternalError, LoadStatus, Progress, RecvMsg, VfsDriver, VfsDriverTy
 use log::error;
 use std::fs::File;
 use std::io::{Cursor, Read};
+use std::collections::HashSet;
 use zip::ZipArchive;
 
 #[derive(Debug)]
@@ -126,8 +127,47 @@ impl VfsDriver for ZipFs {
     fn get_directory_list(
         &self,
         path: &str,
-        progress: &mut Progress,
+        _progress: &mut Progress,
     ) -> Result<LoadStatus, InternalError> {
-        Ok(LoadStatus::Directory(Vec::new()))
+        let archive = self.data.as_ref().unwrap();
+        let filenames = archive.file_names();
+        let match_dir = if path.ends_with('/') {
+            path.to_owned()
+        } else {
+            format!("{}/",path)
+        };
+
+        let dir_len = match_dir.len();
+        let mut paths = HashSet::new();
+
+        for p in filenames {
+            if !p.starts_with(&match_dir) {
+                continue;
+            }
+            
+            let t = &p[dir_len..];
+            
+            if let Some(pos) = t.find('/') {
+                if pos <= t.len() {
+                    paths.insert(&t[..pos]);
+                }
+            } else {
+                paths.insert(t);
+            }
+        }
+
+        let mut output = Vec::with_capacity(paths.len());
+
+        for s in paths {
+            if s.is_empty() {
+                continue;
+            }
+
+            output.push(s.to_owned());
+        }
+
+        output.sort();
+
+        Ok(LoadStatus::Directory(output))
     }
 }
