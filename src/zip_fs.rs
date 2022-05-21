@@ -1,4 +1,4 @@
-use crate::{InternalError, Node, Progress, RecvMsg, VfsDriver, VfsDriverType};
+use crate::{InternalError, LoadStatus, Progress, RecvMsg, VfsDriver, VfsDriverType, LoadState};
 use log::error;
 use std::fs::File;
 use std::io::{Cursor, Read};
@@ -85,11 +85,15 @@ impl VfsDriver for ZipFs {
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(&mut self, path: &str, progress: &mut Progress) -> Result<RecvMsg, InternalError> {
+    fn load_url(
+        &mut self,
+        path: &str,
+        progress: &mut Progress,
+    ) -> Result<LoadStatus, InternalError> {
         let archive = self.data.as_mut().unwrap();
 
         let mut file = match archive.by_name(path) {
-            Err(_) => return Ok(RecvMsg::NotFound),
+            Err(_) => return Ok(LoadStatus::NotFound),
             Ok(f) => f,
         };
 
@@ -116,11 +120,14 @@ impl VfsDriver for ZipFs {
             }
         }
 
-        Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
+        Ok(LoadStatus::Data(output_data.into_boxed_slice()))
     }
 
-    // get a file/directory listing for the driver
-    fn get_directory_list(&self, _path: &str) -> Vec<Node> {
-        Vec::new()
+    fn get_directory_list(
+        &self,
+        path: &str,
+        progress: &mut Progress,
+    ) -> Result<LoadStatus, InternalError> {
+        Ok(LoadStatus::Directory(Vec::new()))
     }
 }

@@ -437,7 +437,7 @@ impl<'a> Loader<'a> {
                 vfs.node_drivers[self.driver_index].load_url(&current_path, &mut progress)?;
 
             match load_msg {
-                RecvMsg::IsDirectory(_) => {
+                LoadStatus::Directory(_) => {
                     println!("path is dir {}", current_path);
                     // TODO: Insert into tree
 
@@ -445,7 +445,7 @@ impl<'a> Loader<'a> {
                     return Ok(());
                 }
 
-                RecvMsg::ReadDone(in_data) => {
+                LoadStatus::Data(in_data) => {
                     println!("Read data to memory: {}", current_path);
                     // if level is 0 then we are done, otherwise we have to continue
                     // TODO: If user has "scan" on data we need to continue here as well

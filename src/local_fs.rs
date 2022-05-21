@@ -113,6 +113,6 @@ impl VfsDriver for LocalFs {
                 None
             })
             .collect();
-        Ok(files)
+        Ok(LoadStatus::Directory(files))
     }
 }
