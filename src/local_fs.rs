@@ -1,4 +1,4 @@
-use crate::{InternalError, Node, Progress, RecvMsg, VfsDriver, VfsDriverType};
+use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
 use log::trace;
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
@@ -36,7 +36,7 @@ impl VfsDriver for LocalFs {
         false
     }
 
-    fn create_instance(&self) -> Box<dyn VfsDriver> {
+    fn create_instance(&self) -> VfsDriverType {
         Box::new(LocalFs { root: "".into() })
     }
 
@@ -52,13 +52,17 @@ impl VfsDriver for LocalFs {
     }
 
     /// Read a file from the local filesystem.
-    fn load_url(&mut self, path: &str, progress: &mut Progress) -> Result<RecvMsg, InternalError> {
+    fn load_url(
+        &mut self,
+        path: &str,
+        progress: &mut Progress,
+    ) -> Result<LoadStatus, InternalError> {
         let path = self.root.join(path);
 
         let metadata = std::fs::metadata(&path)?;
 
         if metadata.is_dir() {
-            return Ok(RecvMsg::IsDirectory(0));
+            return Ok(LoadStatus::Directory(Vec::new()));
         }
 
         let len = metadata.len() as usize;
@@ -86,12 +90,15 @@ impl VfsDriver for LocalFs {
             }
         }
 
-        Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
+        Ok(LoadStatus::Data(output_data.into_boxed_slice()))
     }
 
-    // get a file listing for the driver
-    fn get_directory_list(&self, path: &str) -> Vec<Node> {
-        let files: Vec<Node> = WalkDir::new(self.root.join(path))
+    fn get_directory_list(
+        &self,
+        path: &str,
+        progress: &mut Progress,
+    ) -> Result<LoadStatus, InternalError> {
+        let files: Vec<String> = WalkDir::new(self.root.join(path))
             .max_depth(1)
             .into_iter()
             .filter_map(|e| {
@@ -99,17 +106,13 @@ impl VfsDriver for LocalFs {
                 let metadata = file.metadata().unwrap();
 
                 if let Some(filename) = file.path().file_name() {
-                    let name = filename.to_str().unwrap();
-                    if metadata.is_dir() {
-                        return Some(Node::new_directory_node(name));
-                    } else {
-                        return Some(Node::new_file_node(name));
-                    }
+                    let name = filename.to_string_lossy();
+                    return Some(name.into());
                 }
 
                 None
             })
             .collect();
-        files
+        Ok(files)
     }
 }

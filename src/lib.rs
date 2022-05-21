@@ -17,6 +17,15 @@ pub enum RecvMsg {
     NotFound,
 }
 
+pub enum LoadStatus {
+    // Data was loaded from the current node
+    Data(Box<[u8]>),
+    // Node directory.
+    Directory(Vec<String>),
+    /// Requested node wasn't found
+    NotFound,
+}
+
 #[derive(Error, Debug)]
 pub enum InternalError {
     #[error("File Error)")]
@@ -58,9 +67,17 @@ pub(crate) trait VfsDriver: std::fmt::Debug {
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType>;
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(&mut self, path: &str, progress: &mut Progress) -> Result<RecvMsg, InternalError>;
+    fn load_url(
+        &mut self,
+        path: &str,
+        progress: &mut Progress,
+    ) -> Result<LoadStatus, InternalError>;
     // get a file/directory listing for the driver
-    fn get_directory_list(&self, path: &str) -> Vec<Node>;
+    fn get_directory_list(
+        &self,
+        path: &str,
+        progress: &mut Progress,
+    ) -> Result<LoadStatus, InternalError>;
 }
 
 pub struct Handle {
@@ -164,12 +181,9 @@ impl VfsState {
 }
 
 pub struct Vfs {
-    //state: Arc<Mutex<VfsState>>,
     /// for sending messages to the main-thread
     main_send: crossbeam_channel::Sender<SendMsg>,
 }
-
-//pub type VfsInstance = Box<dyn VfsDriver>;
 
 impl Vfs {
     /// Loads the first file given a url. If an known archive is encounterd the first file will be extracted
