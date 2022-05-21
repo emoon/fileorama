@@ -1,11 +1,6 @@
-use crate::{InternalError, Node, Progress, RecvMsg, VfsDriver, VfsDriverType, VfsError};
+use crate::{InternalError, Node, Progress, RecvMsg, VfsDriver, VfsDriverType};
 use log::trace;
-use std::{
-    fs::File,
-    io::Read,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Debug)]
@@ -81,13 +76,13 @@ impl VfsDriver for LocalFs {
             // above 5 meg we read in 10 chunks
             let loop_count = 10;
             let block_len = len / loop_count;
-            let percent_step = 1.0 / loop_count as f32;
+            progress.set_step(loop_count);
 
-            for i in 0..loop_count {
+            for i in 0..loop_count + 1 {
                 let block_offset = i * block_len;
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
-                progress.step();
+                progress.step()?;
             }
         }
 

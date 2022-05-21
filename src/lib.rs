@@ -202,23 +202,6 @@ fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
     }
 }
 
-/*
-fn find_driver_for_path(drivers: &[VfsDriverType], path: &str) -> Option<VfsDriverType> {
-    for d in drivers {
-        if d.supports_url(path) {
-            // Check if we can
-            if d.can_load_from_url(path) {
-                if let Some(new_driver) = d.create_from_url(path) {
-                    return Some(new_driver);
-                }
-            }
-        }
-    }
-
-    None
-}
-*/
-
 // TODO: uses a hashmap instead?
 fn find_entry_in_node(node: &Node, nodes: &[Node], name: &str) -> Option<usize> {
     for n in &node.nodes {
@@ -486,17 +469,17 @@ pub(crate) fn load(
     vfs: &mut VfsState,
     path: &str,
     msg: &crossbeam_channel::Sender<RecvMsg>,
-) -> bool {
+) -> Result<(), InternalError> {
     let mut loader = Loader::new(path, msg);
 
     loop {
         match loader.state {
             LoadState::FindNode => loader.find_node(vfs),
             LoadState::FindDriverUrl => loader.find_driver_url(vfs),
-            LoadState::FindDriverData => loader.find_driver_data(vfs).unwrap(),
-            LoadState::LoadFromDriver => loader.load_from_driver(vfs).unwrap(),
-            LoadState::Done => return true,
-            LoadState::UnsupportedPath => return false,
+            LoadState::FindDriverData => loader.find_driver_data(vfs)?,
+            LoadState::LoadFromDriver => loader.load_from_driver(vfs)?,
+            LoadState::Done => return Ok(()),
+            LoadState::UnsupportedPath => return Ok(()),
         }
     }
 }
@@ -504,26 +487,9 @@ pub(crate) fn load(
 fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg) {
     match msg {
         SendMsg::LoadUrl(path, _node_index, msg) => {
-            let p = Path::new(path);
-
-            load(vfs, path, msg);
-            /*
-
-            // TODO: Support parsing the url in sub-chunks i.e mydir/foo.zip/dir/foo.rar/file
-            for d in &drivers {
-                // Found a loader that works
-                let loader = d.sreate_instance();
-
-                match loader.load_url(path, msg) {
-                    Err(e) => {
-                        handle_error(e, msg);
-                        return;
-                    }
-
-                    msg.send(rec_msg).unwrap(),
-                }
+            if let Err(e) = load(vfs, path, msg) {
+                handle_error(e, msg);
             }
-            */
         }
     }
 }
