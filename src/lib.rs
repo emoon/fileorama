@@ -35,6 +35,8 @@ pub enum VfsError {
 
 pub(crate) struct Progress<'a> {
     range: (f32, f32),
+    step: f32,
+    current: f32,
     msg: &'a crossbeam_channel::Sender<RecvMsg>,
 }
 
@@ -55,7 +57,7 @@ pub(crate) trait VfsDriver: std::fmt::Debug {
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType>;
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(&mut self, path: &str, progress: &Progress) -> Result<RecvMsg, InternalError>;
+    fn load_url(&mut self, path: &str, progress: &mut Progress) -> Result<RecvMsg, InternalError>;
     // get a file/directory listing for the driver
     fn get_directory_list(&self, path: &str) -> Vec<Node>;
 }
@@ -72,16 +74,23 @@ pub enum VfsType {
 }
 
 impl<'a> Progress<'a> {
-    pub fn update(&'a self, v: f32) -> Result<(), InternalError> {
-        let f = v.clamp(0.0, 1.0);
+    pub fn step(&mut self) -> Result<(), InternalError> {
+        self.current += self.step;
+        let f = self.current.clamp(0.0, 1.0);
         let res = self.range.0 + f * (self.range.1 - self.range.0);
         self.msg.send(RecvMsg::ReadProgress(res))?;
         Ok(())
     }
 
+    pub fn set_step(&mut self, count: usize) {
+        self.step = 1.0 / usize::max(1, count) as f32;
+    }
+
     fn new(start: f32, end: f32, msg: &crossbeam_channel::Sender<RecvMsg>) -> Progress {
         Progress {
             range: (start, end),
+            step: 0.1,
+            current: 0.0,
             msg,
         }
     }
@@ -278,7 +287,7 @@ pub(crate) fn load(
     let comp_len = components.len();
 
     let mut i = 0;
-    let mut driver_index = None;
+    let mut driver_index = 0;
     let mut state = LoadState::FindNode;
     let mut data: Option<Box<[u8]>> = None;
 
@@ -287,14 +296,14 @@ pub(crate) fn load(
             // Search for node in the vfs
             LoadState::FindNode => {
                 // Search for node in the vfs
-                for (t, c) in components[i..].iter().enumerate() {
+                for c in &components[i..] {
                     let node = &vfs.nodes[node_index];
                     let component_name = get_component_name(c, &mut had_prefix);
                     if let Some(entry) = find_entry_in_node(node, &vfs.nodes, &component_name) {
                         node_index = entry;
                         i += 1;
                         // If we don't have any driver yet and we didn't find a path we must search for a driver
-                    } else if driver_index.is_none() {
+                    } else if i == 0 {
                         state = LoadState::FindDriverUrl;
                     } else {
                         state = LoadState::LoadFromDriver;
@@ -330,9 +339,8 @@ pub(crate) fn load(
                     // If we found a driver we mount it inside the vfs
                     let mut current_index = node_index;
                     let mut prefix = false;
-                    let d_index = vfs.node_drivers.len();
 
-                    driver_index = Some(d_index);
+                    driver_index = vfs.node_drivers.len();
                     vfs.node_drivers.push(d);
 
                     let comp = p.components();
@@ -341,7 +349,7 @@ pub(crate) fn load(
                         let new_node = Node {
                             _node_type: NodeType::Unknown,
                             _parent: current_index as _,
-                            driver_index: d_index as u32,
+                            driver_index: driver_index as u32,
                             name: get_component_name(&c, &mut prefix).to_string(),
                             ..Default::default()
                         };
@@ -373,10 +381,11 @@ pub(crate) fn load(
                     // Found a driver for this data. Updated the node index with the new driver
                     // and switch state to load that from the new driver
                     if let Some(new_driver) = d.create_from_data(node_data.clone()) {
-                        let d_index = vfs.node_drivers.len();
-                        driver_index = Some(d_index);
+                        driver_index = vfs.node_drivers.len();
+
                         vfs.node_drivers.push(new_driver);
-                        vfs.nodes[node_index].driver_index = d_index as _;
+                        vfs.nodes[node_index].driver_index = driver_index as _;
+
                         state = LoadState::LoadFromDriver;
                         found_driver = true;
                         break;
@@ -392,10 +401,9 @@ pub(crate) fn load(
             }
 
             LoadState::LoadFromDriver => {
-                let d_index = driver_index.unwrap();
-                let d = &mut vfs.node_drivers[d_index];
+                let d = &mut vfs.node_drivers[driver_index];
 
-                println!(">> Lodaing with driver {}", d_index);
+                println!(">> Lodaing with driver {}", driver_index);
 
                 // walkbackwards from the current path and try to load the data
 
@@ -407,8 +415,8 @@ pub(crate) fn load(
 
                 while !current_path.is_empty() {
                     // TODO: Fix range
-                    let progress = Progress::new(0.0, 1.0, msg);
-                    match d.load_url(&current_path, &progress) {
+                    let mut progress = Progress::new(0.0, 1.0, msg);
+                    match d.load_url(&current_path, &mut progress) {
                         Err(e) => {
                             println!("{:?}", e);
                             //return false;
@@ -440,7 +448,7 @@ pub(crate) fn load(
                                             let new_node = Node {
                                                 _node_type: NodeType::Unknown,
                                                 _parent: current_index as _,
-                                                driver_index: d_index as u32,
+                                                driver_index: driver_index as u32,
                                                 name: get_component_name(&c, &mut prefix)
                                                     .to_string(),
                                                 ..Default::default()
@@ -580,16 +588,20 @@ mod tests {
         let vfs = Vfs::new();
         let handle = vfs.load_url(&path.to_string_lossy());
 
-        match handle.recv.recv() {
-            Ok(msg) => match msg {
-                RecvMsg::ReadDone(data) => {
-                    println!("Got data {} ", data.len());
-                }
-                RecvMsg::ReadProgress(_) => (),
-                RecvMsg::Error(_) => todo!(),
-                RecvMsg::IsDirectory(_) => todo!(),
-            },
-            Err(e) => panic!("{:?}", e),
+        for i in 0..40 {
+            match handle.recv.try_recv() {
+                Ok(msg) => match msg {
+                    RecvMsg::ReadDone(data) => {
+                        println!("MAIN: Got data {} ", data.len());
+                    }
+                    RecvMsg::ReadProgress(_) => println!("Got progress... {}", i),
+                    RecvMsg::Error(_) => todo!(),
+                    RecvMsg::IsDirectory(_) => todo!(),
+                },
+                Err(_e) => (),
+            }
+
+            thread::sleep(std::time::Duration::from_millis(20));
         }
 
         //load(&mut state, &path.to_string_lossy());

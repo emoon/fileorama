@@ -85,7 +85,7 @@ impl VfsDriver for ZipFs {
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(&mut self, path: &str, progress: &Progress) -> Result<RecvMsg, InternalError> {
+    fn load_url(&mut self, path: &str, progress: &mut Progress) -> Result<RecvMsg, InternalError> {
         let archive = self.data.as_mut().unwrap();
 
         let mut file = match archive.by_name(path) {
@@ -98,27 +98,24 @@ impl VfsDriver for ZipFs {
 
         // if file is small than 10k we just unpack it directly without progress
         if len < 10 * 1024 {
-            progress.update(0.0);
+            progress.set_step(1);
             file.read_to_end(&mut output_data)?;
+            progress.step()?;
         } else {
             // above 10k we read in 10 chunks
             let loop_count = 10;
             let block_len = len / loop_count;
-            let mut percent = 0.0;
-            let percent_step = 1.0 / loop_count as f32;
-            let mut total_read_size = 0;
+
+            progress.set_step(loop_count);
 
             for i in 0..loop_count + 1 {
                 let block_offset = i * block_len;
                 let read_amount = usize::min(len - block_offset, block_len);
                 file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
-                total_read_size += read_amount;
-                progress.update(percent);
-                percent += percent_step;
+                progress.step()?;
             }
         }
 
-        progress.update(1.0);
         Ok(RecvMsg::ReadDone(output_data.into_boxed_slice()))
     }
 
