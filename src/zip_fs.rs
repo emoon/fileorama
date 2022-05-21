@@ -89,7 +89,7 @@ impl VfsDriver for ZipFs {
         let archive = self.data.as_mut().unwrap();
 
         let mut file = match archive.by_name(path) {
-            Err(_) => return Err(InternalError::FileDirNotFound),
+            Err(_) => return Ok(RecvMsg::NotFound),
             Ok(f) => f,
         };
 
