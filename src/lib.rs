@@ -257,6 +257,32 @@ fn add_new_node(state: &mut VfsState, index: usize, new_node: Node) -> usize {
     new_index
 }
 
+fn add_path_to_vfs(
+    vfs: &mut VfsState,
+    index: usize,
+    driver_index: u32,
+    path: &Path,
+) -> (usize, usize) {
+    let mut count = 0;
+    let mut prefix = false;
+    let mut current_index = index;
+
+    for c in path.components() {
+        let new_node = Node {
+            _node_type: NodeType::Unknown,
+            _parent: current_index as _,
+            driver_index,
+            name: get_component_name(&c, &mut prefix).to_string(),
+            ..Default::default()
+        };
+
+        current_index = add_new_node(vfs, current_index, new_node);
+        count += 1;
+    }
+
+    (current_index, count)
+}
+
 #[derive(PartialEq)]
 enum LoadState {
     FindNode,
@@ -316,7 +342,6 @@ pub(crate) fn load(
                 let mut p: PathBuf = components[i..].iter().collect();
 
                 let mut current_path = p.to_str().unwrap().to_owned();
-                let mut level = 0;
                 let mut driver = None;
 
                 println!("current path {}", current_path);
@@ -332,34 +357,19 @@ pub(crate) fn load(
 
                     p.pop();
                     current_path = p.to_str().unwrap().to_owned();
-                    level += 1;
                 }
 
                 if let Some(d) = driver {
                     // If we found a driver we mount it inside the vfs
-                    let mut current_index = node_index;
-                    let mut prefix = false;
+                    //let mut current_index = node_index;
+                    //let mut prefix = false;
 
                     driver_index = vfs.node_drivers.len();
                     vfs.node_drivers.push(d);
 
-                    let comp = p.components();
-
-                    for c in comp {
-                        let new_node = Node {
-                            _node_type: NodeType::Unknown,
-                            _parent: current_index as _,
-                            driver_index: driver_index as u32,
-                            name: get_component_name(&c, &mut prefix).to_string(),
-                            ..Default::default()
-                        };
-
-                        current_index = add_new_node(vfs, current_index, new_node);
-                    }
-
-                    // Start from the index where the new driver has been mounted
-                    node_index = current_index;
-                    i += comp_len - level;
+                    let res = add_path_to_vfs(vfs, node_index, driver_index as _, &p);
+                    node_index = res.0;
+                    i += res.1;
 
                     state = LoadState::LoadFromDriver;
                 } else {
@@ -439,28 +449,10 @@ pub(crate) fn load(
                                         msg.send(RecvMsg::ReadDone(in_data)).unwrap();
                                         return true;
                                     } else {
-                                        let comp = p.components();
-                                        let mut current_index = node_index;
-                                        let mut prefix = false;
-                                        let mut count = 0;
-
-                                        for c in comp {
-                                            let new_node = Node {
-                                                _node_type: NodeType::Unknown,
-                                                _parent: current_index as _,
-                                                driver_index: driver_index as u32,
-                                                name: get_component_name(&c, &mut prefix)
-                                                    .to_string(),
-                                                ..Default::default()
-                                            };
-
-                                            current_index =
-                                                add_new_node(vfs, current_index, new_node);
-                                            count += 1;
-                                        }
-
-                                        node_index = current_index;
-                                        i += count;
+                                        let res =
+                                            add_path_to_vfs(vfs, node_index, driver_index as _, &p);
+                                        node_index = res.0;
+                                        i += res.1;
 
                                         // Add new nodes to the vfs
                                         data = Some(in_data);
