@@ -41,8 +41,6 @@ impl VfsDriver for LocalFs {
     }
 
     fn create_from_url(&self, path: &str) -> Option<VfsDriverType> {
-        println!("LocalFs {}", path);
-
         Some(Box::new(LocalFs { root: path.into() }))
     }
 
@@ -62,14 +60,12 @@ impl VfsDriver for LocalFs {
         let metadata = std::fs::metadata(&path)?;
 
         if metadata.is_dir() {
-            return Ok(LoadStatus::Directory(Vec::new()));
+            return Ok(LoadStatus::Directory);
         }
 
         let len = metadata.len() as usize;
         let mut file = File::open(&path)?;
         let mut output_data = vec![0u8; len];
-
-        trace!("vfs: reading from {:#?}", path);
 
         // if file is small than 5 meg we just load it fully directly to memory
         if len < 5 * 1024 * 1024 {
@@ -97,14 +93,13 @@ impl VfsDriver for LocalFs {
         &self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, InternalError> {
-        let files: Vec<String> = WalkDir::new(self.root.join(path))
+    ) -> Result<Vec<String>, InternalError> {
+        progress.set_step(1);
+        let mut files: Vec<String> = WalkDir::new(self.root.join(path))
             .max_depth(1)
             .into_iter()
             .filter_map(|e| {
                 let file = e.unwrap();
-                let metadata = file.metadata().unwrap();
-
                 if let Some(filename) = file.path().file_name() {
                     let name = filename.to_string_lossy();
                     return Some(name.into());
@@ -113,6 +108,10 @@ impl VfsDriver for LocalFs {
                 None
             })
             .collect();
-        Ok(LoadStatus::Directory(files))
+        progress.step()?;
+
+        files.sort();
+
+        Ok(files)
     }
 }

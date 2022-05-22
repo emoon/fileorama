@@ -1,8 +1,8 @@
-use crate::{InternalError, LoadStatus, Progress, RecvMsg, VfsDriver, VfsDriverType, LoadState};
+use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
 use log::error;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Cursor, Read};
-use std::collections::HashSet;
 use zip::ZipArchive;
 
 #[derive(Debug)]
@@ -29,7 +29,7 @@ impl VfsDriver for ZipFs {
     }
 
     // Create a new instance given data. The VfsDriver will take ownership of the data
-    fn create_instance(&self) -> Box<dyn VfsDriver> {
+    fn create_instance(&self) -> VfsDriverType {
         Box::new(ZipFs::new())
     }
 
@@ -93,10 +93,18 @@ impl VfsDriver for ZipFs {
     ) -> Result<LoadStatus, InternalError> {
         let archive = self.data.as_mut().unwrap();
 
+        if path.is_empty() {
+            return Ok(LoadStatus::Directory);
+        }
+
         let mut file = match archive.by_name(path) {
             Err(_) => return Ok(LoadStatus::NotFound),
             Ok(f) => f,
         };
+
+        if file.is_dir() {
+            return Ok(LoadStatus::Directory);
+        }
 
         let len = file.size() as usize;
         let mut output_data = vec![0u8; len];
@@ -127,15 +135,19 @@ impl VfsDriver for ZipFs {
     fn get_directory_list(
         &self,
         path: &str,
-        _progress: &mut Progress,
-    ) -> Result<LoadStatus, InternalError> {
+        progress: &mut Progress,
+    ) -> Result<Vec<String>, InternalError> {
         let archive = self.data.as_ref().unwrap();
         let filenames = archive.file_names();
-        let match_dir = if path.ends_with('/') {
-            path.to_owned()
+        let match_dir: String = if path.ends_with('/') {
+            path.into()
+        } else if path.is_empty() {
+            "".into()
         } else {
-            format!("{}/",path)
+            format!("{}/", path)
         };
+
+        progress.set_step(3);
 
         let dir_len = match_dir.len();
         let mut paths = HashSet::new();
@@ -144,9 +156,9 @@ impl VfsDriver for ZipFs {
             if !p.starts_with(&match_dir) {
                 continue;
             }
-            
+
             let t = &p[dir_len..];
-            
+
             if let Some(pos) = t.find('/') {
                 if pos <= t.len() {
                     paths.insert(&t[..pos]);
@@ -155,6 +167,8 @@ impl VfsDriver for ZipFs {
                 paths.insert(t);
             }
         }
+
+        progress.step()?;
 
         let mut output = Vec::with_capacity(paths.len());
 
@@ -166,8 +180,12 @@ impl VfsDriver for ZipFs {
             output.push(s.to_owned());
         }
 
+        progress.step()?;
+
         output.sort();
 
-        Ok(LoadStatus::Directory(output))
+        progress.step()?;
+
+        Ok(output)
     }
 }
