@@ -6,13 +6,22 @@ use std::io::{Cursor, Read};
 use zip::ZipArchive;
 
 #[derive(Debug)]
+enum ZipInternal {
+    FileReader(ZipArchive<File>),
+    MemReader(ZipArchive<Cursor<Box<[u8]>>>),
+    None,
+}
+
+#[derive(Debug)]
 pub struct ZipFs {
-    data: Option<ZipArchive<Cursor<Box<[u8]>>>>,
+    data: ZipInternal,
 }
 
 impl ZipFs {
     pub fn new() -> ZipFs {
-        ZipFs { data: None }
+        ZipFs {
+            data: ZipInternal::None,
+        }
     }
 }
 
@@ -49,7 +58,9 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        Some(Box::new(ZipFs { data: Some(a) }))
+        Some(Box::new(ZipFs {
+            data: ZipInternal::MemReader(a),
+        }))
     }
 
     // Get some data in and returns true if driver can be mounted from it
@@ -79,10 +90,17 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        let mut data = Vec::new();
-        read_file.read_to_end(&mut data).unwrap();
+        let a = match ZipArchive::new(read_file) {
+            Ok(a) => a,
+            Err(e) => {
+                error!("ZipFs Error: {:}", e);
+                return None;
+            }
+        };
 
-        self.create_from_data(data.into_boxed_slice())
+        Some(Box::new(ZipFs {
+            data: ZipInternal::FileReader(a),
+        }))
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
@@ -91,13 +109,17 @@ impl VfsDriver for ZipFs {
         path: &str,
         progress: &mut Progress,
     ) -> Result<LoadStatus, InternalError> {
-        let archive = self.data.as_mut().unwrap();
-
         if path.is_empty() {
             return Ok(LoadStatus::Directory);
         }
 
-        let mut file = match archive.by_name(path) {
+        let read_file = match &mut self.data {
+            ZipInternal::FileReader(a) => a.by_name(path),
+            ZipInternal::MemReader(a) => a.by_name(path),
+            ZipInternal::None => return Ok(LoadStatus::NotFound),
+        };
+
+        let mut file = match read_file {
             Err(_) => return Ok(LoadStatus::NotFound),
             Ok(f) => f,
         };
@@ -137,8 +159,8 @@ impl VfsDriver for ZipFs {
         path: &str,
         progress: &mut Progress,
     ) -> Result<Vec<String>, InternalError> {
-        let archive = self.data.as_ref().unwrap();
-        let filenames = archive.file_names();
+        let mut paths = HashSet::<String>::new();
+
         let match_dir: String = if path.ends_with('/') {
             path.into()
         } else if path.is_empty() {
@@ -147,26 +169,50 @@ impl VfsDriver for ZipFs {
             format!("{}/", path)
         };
 
-        progress.set_step(3);
-
         let dir_len = match_dir.len();
-        let mut paths = HashSet::new();
 
-        for p in filenames {
-            if !p.starts_with(&match_dir) {
-                continue;
-            }
+        // TODO: Fix me
+        match &self.data {
+            ZipInternal::FileReader(a) => {
+                for p in a.file_names() {
+                    if !p.starts_with(&match_dir) {
+                        continue;
+                    }
 
-            let t = &p[dir_len..];
+                    let t = &p[dir_len..];
 
-            if let Some(pos) = t.find('/') {
-                if pos <= t.len() {
-                    paths.insert(&t[..pos]);
+                    if let Some(pos) = t.find('/') {
+                        if pos <= t.len() {
+                            paths.insert(t[..pos].to_owned());
+                        }
+                    } else {
+                        paths.insert(t.to_owned());
+                    }
                 }
-            } else {
-                paths.insert(t);
             }
+
+            ZipInternal::MemReader(a) => {
+                for p in a.file_names() {
+                    if !p.starts_with(&match_dir) {
+                        continue;
+                    }
+
+                    let t = &p[dir_len..];
+
+                    if let Some(pos) = t.find('/') {
+                        if pos <= t.len() {
+                            paths.insert(t[..pos].to_owned());
+                        }
+                    } else {
+                        paths.insert(t.to_owned());
+                    }
+                }
+            }
+
+            ZipInternal::None => return Ok(Vec::new()),
         }
+
+        progress.set_step(3);
 
         progress.step()?;
 
