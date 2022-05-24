@@ -23,6 +23,62 @@ impl ZipFs {
             data: ZipInternal::None,
         }
     }
+
+    fn get_dirs(
+        path: &str,
+        progress: &mut Progress,
+        filenames: &mut dyn Iterator<Item = &str>,
+    ) -> Result<Vec<String>, InternalError> {
+        let mut paths = HashSet::<String>::new();
+
+        let match_dir: String = if path.ends_with('/') {
+            path.into()
+        } else if path.is_empty() {
+            "".into()
+        } else {
+            format!("{}/", path)
+        };
+
+        let dir_len = match_dir.len();
+
+        for p in filenames {
+            if !p.starts_with(&match_dir) {
+                continue;
+            }
+
+            let t = &p[dir_len..];
+
+            if let Some(pos) = t.find('/') {
+                if pos <= t.len() {
+                    paths.insert(t[..pos].to_owned());
+                }
+            } else {
+                paths.insert(t.to_owned());
+            }
+        }
+
+        progress.set_step(3);
+
+        progress.step()?;
+
+        let mut output = Vec::with_capacity(paths.len());
+
+        for s in paths {
+            if s.is_empty() {
+                continue;
+            }
+
+            output.push(s.to_owned());
+        }
+
+        progress.step()?;
+
+        output.sort();
+
+        progress.step()?;
+
+        Ok(output)
+    }
 }
 
 impl VfsDriver for ZipFs {
@@ -82,7 +138,7 @@ impl VfsDriver for ZipFs {
 
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
-        let mut read_file = match File::open(url) {
+        let read_file = match File::open(url) {
             Ok(f) => f,
             Err(e) => {
                 error!("ZipFs File Error: {:}", e);
@@ -159,79 +215,10 @@ impl VfsDriver for ZipFs {
         path: &str,
         progress: &mut Progress,
     ) -> Result<Vec<String>, InternalError> {
-        let mut paths = HashSet::<String>::new();
-
-        let match_dir: String = if path.ends_with('/') {
-            path.into()
-        } else if path.is_empty() {
-            "".into()
-        } else {
-            format!("{}/", path)
-        };
-
-        let dir_len = match_dir.len();
-
-        // TODO: Fix me
         match &self.data {
-            ZipInternal::FileReader(a) => {
-                for p in a.file_names() {
-                    if !p.starts_with(&match_dir) {
-                        continue;
-                    }
-
-                    let t = &p[dir_len..];
-
-                    if let Some(pos) = t.find('/') {
-                        if pos <= t.len() {
-                            paths.insert(t[..pos].to_owned());
-                        }
-                    } else {
-                        paths.insert(t.to_owned());
-                    }
-                }
-            }
-
-            ZipInternal::MemReader(a) => {
-                for p in a.file_names() {
-                    if !p.starts_with(&match_dir) {
-                        continue;
-                    }
-
-                    let t = &p[dir_len..];
-
-                    if let Some(pos) = t.find('/') {
-                        if pos <= t.len() {
-                            paths.insert(t[..pos].to_owned());
-                        }
-                    } else {
-                        paths.insert(t.to_owned());
-                    }
-                }
-            }
-
-            ZipInternal::None => return Ok(Vec::new()),
+            ZipInternal::FileReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
+            ZipInternal::MemReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
+            ZipInternal::None => Ok(Vec::new()),
         }
-
-        progress.set_step(3);
-
-        progress.step()?;
-
-        let mut output = Vec::with_capacity(paths.len());
-
-        for s in paths {
-            if s.is_empty() {
-                continue;
-            }
-
-            output.push(s.to_owned());
-        }
-
-        progress.step()?;
-
-        output.sort();
-
-        progress.step()?;
-
-        Ok(output)
     }
 }
