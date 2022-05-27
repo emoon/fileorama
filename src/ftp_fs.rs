@@ -16,6 +16,32 @@ impl FtpFs {
     }
 }
 
+impl FtpFs {
+    fn find_server_name(url: &str) -> Option<&str> {
+        if let Some(url) = url.strip_prefix("ftp:/") {
+            // handle if we have name and no path
+            if !url.contains('/') {
+                return url;
+            }
+
+            if let Some(offset) = url.find('/') {
+                return &url[..offset];
+            }
+
+        } else {
+            if !url.contains('/') {
+                return url;
+            }
+
+            if let Some(offset) = url.find('/') {
+                return &url[..offset];
+            }
+        } 
+
+        None
+    }
+}
+
 impl VfsDriver for FtpFs {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool {
@@ -24,7 +50,7 @@ impl VfsDriver for FtpFs {
 
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool {
-        // we don't support url style paths like ftp:// http:// etc.
+        // Only supports urls that starts with ftp 
         url.starts_with("ftp:/") || url.starts_with("ftp.")
     }
 
@@ -45,35 +71,30 @@ impl VfsDriver for FtpFs {
 
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
-        if std::fs::metadata(url).is_err() {
-            return false;
-        }
-
-        let read_file = match File::open(url) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("FtpFs File Error: {:}", e);
-                return false;
-            }
-        };
-
-        zip::ZipArchive::new(read_file).is_ok()
+        // Only supports urls that starts with ftp 
+        url.starts_with("ftp:/") || url.starts_with("ftp.")
     }
 
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
-        let mut read_file = match File::open(url) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("FtpFs File Error: {:}", e);
+        if let Some(url) = Self::find_server_name(url) {
+            if let stream = match FtpStream::connect(url) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!("FtpDriver error {:?}", e);
+                    return None;
+                }
+            };
+
+            if Err(e) = ftp_stream.login("anonymous", "anonymous") {
+                error!("FtpDriver login failed {}", e);
                 return None;
             }
-        };
 
-        let mut data = Vec::new();
-        read_file.read_to_end(&mut data).unwrap();
+            return Box::new(FtpFs { data: Some(stream) })
+        }
 
-        self.create_from_data(data.into_boxed_slice())
+        None
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to

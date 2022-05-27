@@ -1,4 +1,4 @@
-use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
+use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
 use log::trace;
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
@@ -93,25 +93,33 @@ impl VfsDriver for LocalFs {
         &self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<Vec<String>, InternalError> {
+    ) -> Result<FilesDirs, InternalError> {
         progress.set_step(1);
-        let mut files: Vec<String> = WalkDir::new(self.root.join(path))
-            .max_depth(1)
-            .into_iter()
-            .filter_map(|e| {
-                let file = e.unwrap();
-                if let Some(filename) = file.path().file_name() {
-                    let name = filename.to_string_lossy();
-                    return Some(name.into());
-                }
+        let mut dirs = Vec::with_capacity(256);
+        let mut files = Vec::with_capacity(256);
 
-                None
-            })
-            .collect();
+        // skip 1 skips the inital directory as it's included otherwise
+        for e in WalkDir::new(path).max_depth(1).into_iter().skip(1) {
+            let file = e?;
+            let metadata = file.metadata()?;
+
+            if let Some(filename) = file.path().file_name() {
+                let name = filename.to_string_lossy().into();
+                if metadata.is_file() {
+                    files.push(name);
+                } else {
+                    dirs.push(name);
+                }
+            }
+        }
+
+        dbg!(&dirs);
+
         progress.step()?;
 
+        dirs.sort();
         files.sort();
 
-        Ok(files)
+        Ok(FilesDirs::new(files, dirs))
     }
 }

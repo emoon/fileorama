@@ -8,12 +8,25 @@ use std::thread::{self};
 
 mod local_fs;
 mod zip_fs;
+//mod ftp_fs;
+
+#[derive(Default, Debug)]
+pub struct FilesDirs {
+    files: Vec<String>,
+    dirs: Vec<String>,
+}
+
+impl FilesDirs {
+    pub(crate) fn new(files: Vec<String>, dirs: Vec<String>) -> FilesDirs {
+        FilesDirs { files, dirs }
+    }
+}
 
 pub enum RecvMsg {
     ReadProgress(f32),
     ReadDone(Box<[u8]>),
     Error(VfsError),
-    Directory(Vec<String>),
+    Directory(FilesDirs),
     NotFound,
 }
 
@@ -34,6 +47,8 @@ pub enum InternalError {
     FileError(#[from] std::io::Error),
     #[error("Send Error")]
     SendError(#[from] crossbeam_channel::SendError<RecvMsg>),
+    #[error("Walkdir Error")]
+    WalkdirError(#[from] walkdir::Error),
 }
 
 #[derive(Error, Debug)]
@@ -77,7 +92,7 @@ pub(crate) trait VfsDriver: std::fmt::Debug {
         &self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<Vec<String>, InternalError>;
+    ) -> Result<FilesDirs, InternalError>;
 }
 
 pub struct Handle {
@@ -114,7 +129,7 @@ impl<'a> Progress<'a> {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum NodeType {
     Unknown,
     File,
@@ -130,7 +145,7 @@ impl Default for NodeType {
 }
 
 // TODO: Move bunch of data out to arrays to reduce reallocs
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Node {
     node_type: NodeType,
     name: String,
@@ -140,11 +155,22 @@ pub struct Node {
 }
 
 impl Node {
-    fn new_directory_node(name: &str) -> Node {
+    fn new_directory_node(name: String, parent: u32) -> Node {
         Node {
             node_type: NodeType::Directory,
             driver_index: -1,
-            name: name.to_owned(),
+            parent,
+            name,
+            ..Default::default()
+        }
+    }
+
+    fn new_file_node(name: String, parent: u32) -> Node {
+        Node {
+            node_type: NodeType::File,
+            driver_index: -1,
+            parent,
+            name,
             ..Default::default()
         }
     }
@@ -168,7 +194,7 @@ impl VfsState {
 
         VfsState {
             drivers,
-            nodes: vec![Node::new_directory_node("root")],
+            nodes: vec![Node::new_directory_node("root".into(), 0)],
             ..Default::default()
         }
     }
@@ -275,6 +301,22 @@ fn add_path_to_vfs(
     }
 
     (current_index, count)
+}
+
+fn add_files_dirs_to_vfs(vfs: &mut VfsState, node_index: usize, files_dirs: FilesDirs) {
+    dbg!(&files_dirs.dirs);
+    dbg!(&files_dirs.files);
+    for name in files_dirs.dirs {
+        let new_node = Node::new_directory_node(name, node_index as _);
+        let index = add_new_node(vfs, node_index, new_node);
+        //vfs.nodes[node_index].nodes.push(index as _);
+    }
+
+    for name in files_dirs.files {
+        let new_node = Node::new_file_node(name, node_index as _);
+        let index = add_new_node(vfs, node_index, new_node);
+        //vfs.nodes[node_index].nodes.push(index as _);
+    }
 }
 
 #[derive(PartialEq)]
@@ -435,22 +477,10 @@ impl<'a> Loader<'a> {
                     // If the node type is unknown it means that we haven't fetched the dirs for
                     // this node yet, so do that and update the node type
                     if vfs.nodes[node_index].node_type == NodeType::Unknown {
-                        let dirs = vfs.node_drivers[driver]
+                        let files_dirs = vfs.node_drivers[driver]
                             .get_directory_list(&current_path, &mut progress)?;
 
-                        // TODO: Validate that we haven't added some nodes here already
-                        for name in dirs {
-                            let new_node = Node {
-                                node_type: NodeType::Unknown,
-                                parent: node_index as _,
-                                driver_index: -1,
-                                name,
-                                ..Default::default()
-                            };
-
-                            let index = add_new_node(vfs, node_index, new_node);
-                            vfs.nodes[node_index].nodes.push(index as _);
-                        }
+                        add_files_dirs_to_vfs(vfs, node_index, files_dirs);
 
                         vfs.nodes[node_index].node_type = NodeType::Directory;
                     }
@@ -540,13 +570,19 @@ impl<'a> Loader<'a> {
         node_index: usize,
     ) -> Result<(), InternalError> {
         let source_node = &vfs.nodes[node_index];
-        let mut output = Vec::with_capacity(source_node.nodes.len());
+        let mut files = Vec::with_capacity(source_node.nodes.len());
+        let mut dirs = Vec::with_capacity(source_node.nodes.len());
 
         for i in &source_node.nodes {
-            output.push(vfs.nodes[*i as usize].name.to_owned());
+            let node = &vfs.nodes[*i as usize];
+            if node.node_type == NodeType::File {
+                files.push(node.name.to_owned())
+            } else {
+                dirs.push(node.name.to_owned())
+            }
         }
 
-        self.msg.send(RecvMsg::Directory(output))?;
+        self.msg.send(RecvMsg::Directory(FilesDirs::new(files, dirs)))?;
         Ok(())
     }
 }
@@ -658,9 +694,12 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::Directory(data)) = handle.recv.try_recv() {
-                assert!(data.iter().any(|v| *v == "a.zip"));
-                assert!(data.iter().any(|v| *v == "beat.zip"));
-                assert!(data.iter().any(|v| *v == "test_dir"));
+                dbg!(&data);
+                assert_eq!(data.files.len(), 2);
+                assert_eq!(data.dirs.len(), 1);
+                assert!(data.files.iter().any(|v| *v == "a.zip"));
+                assert!(data.files.iter().any(|v| *v == "beat.zip"));
+                assert!(data.dirs.iter().any(|v| *v == "test_dir"));
                 return;
             }
 
@@ -679,8 +718,9 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::Directory(data)) = handle.recv.try_recv() {
-                assert!(data.iter().any(|v| *v == "beat.zip"));
-                assert!(data.iter().any(|v| *v == "foo"));
+                dbg!(&data);
+                assert!(data.files.iter().any(|v| *v == "beat.zip"));
+                assert!(data.dirs.iter().any(|v| *v == "foo"));
                 return;
             }
 

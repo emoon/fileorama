@@ -1,4 +1,4 @@
-use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
+use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
 use log::error;
 use std::collections::HashSet;
 use std::fs::File;
@@ -28,8 +28,9 @@ impl ZipFs {
         path: &str,
         progress: &mut Progress,
         filenames: &mut dyn Iterator<Item = &str>,
-    ) -> Result<Vec<String>, InternalError> {
+    ) -> Result<FilesDirs, InternalError> {
         let mut paths = HashSet::<String>::new();
+        let mut files = Vec::with_capacity(256);
 
         let match_dir: String = if path.ends_with('/') {
             path.into()
@@ -53,7 +54,7 @@ impl ZipFs {
                     paths.insert(t[..pos].to_owned());
                 }
             } else {
-                paths.insert(t.to_owned());
+                files.push(t.to_owned());
             }
         }
 
@@ -61,23 +62,24 @@ impl ZipFs {
 
         progress.step()?;
 
-        let mut output = Vec::with_capacity(paths.len());
+        let mut dirs = Vec::with_capacity(paths.len());
 
         for s in paths {
             if s.is_empty() {
                 continue;
             }
 
-            output.push(s.to_owned());
+            dirs.push(s.to_owned());
         }
 
         progress.step()?;
 
-        output.sort();
+        files.sort();
+        dirs.sort();
 
         progress.step()?;
 
-        Ok(output)
+        Ok(FilesDirs::new(files, dirs))
     }
 }
 
@@ -214,11 +216,11 @@ impl VfsDriver for ZipFs {
         &self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<Vec<String>, InternalError> {
+    ) -> Result<FilesDirs, InternalError> {
         match &self.data {
             ZipInternal::FileReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
             ZipInternal::MemReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
-            ZipInternal::None => Ok(Vec::new()),
+            ZipInternal::None => Ok(FilesDirs::default()),
         }
     }
 }
