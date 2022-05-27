@@ -99,7 +99,7 @@ impl VfsDriver for LocalFs {
         let mut files = Vec::with_capacity(256);
 
         // skip 1 skips the inital directory as it's included otherwise
-        for e in WalkDir::new(path).max_depth(1).into_iter().skip(1) {
+        for e in WalkDir::new(self.root.join(path)).max_depth(1).into_iter().skip(1) {
             let file = e?;
             let metadata = file.metadata()?;
 
@@ -112,8 +112,6 @@ impl VfsDriver for LocalFs {
                 }
             }
         }
-
-        dbg!(&dirs);
 
         progress.step()?;
 

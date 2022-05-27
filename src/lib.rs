@@ -304,18 +304,14 @@ fn add_path_to_vfs(
 }
 
 fn add_files_dirs_to_vfs(vfs: &mut VfsState, node_index: usize, files_dirs: FilesDirs) {
-    dbg!(&files_dirs.dirs);
-    dbg!(&files_dirs.files);
     for name in files_dirs.dirs {
         let new_node = Node::new_directory_node(name, node_index as _);
-        let index = add_new_node(vfs, node_index, new_node);
-        //vfs.nodes[node_index].nodes.push(index as _);
+        add_new_node(vfs, node_index, new_node);
     }
 
     for name in files_dirs.files {
         let new_node = Node::new_file_node(name, node_index as _);
-        let index = add_new_node(vfs, node_index, new_node);
-        //vfs.nodes[node_index].nodes.push(index as _);
+        add_new_node(vfs, node_index, new_node);
     }
 }
 
@@ -473,6 +469,7 @@ impl<'a> Loader<'a> {
             match load_msg {
                 LoadStatus::Directory => {
                     let node_index = self.node_index;
+
 
                     // If the node type is unknown it means that we haven't fetched the dirs for
                     // this node yet, so do that and update the node type
@@ -694,7 +691,6 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::Directory(data)) = handle.recv.try_recv() {
-                dbg!(&data);
                 assert_eq!(data.files.len(), 2);
                 assert_eq!(data.dirs.len(), 1);
                 assert!(data.files.iter().any(|v| *v == "a.zip"));
@@ -718,7 +714,8 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::Directory(data)) = handle.recv.try_recv() {
-                dbg!(&data);
+                assert_eq!(data.files.len(), 1);
+                assert_eq!(data.dirs.len(), 1);
                 assert!(data.files.iter().any(|v| *v == "beat.zip"));
                 assert!(data.dirs.iter().any(|v| *v == "foo"));
                 return;
