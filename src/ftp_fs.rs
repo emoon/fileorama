@@ -1,5 +1,5 @@
-use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
-use ftp::FtpStream;
+use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
+use ftp::{FtpError, FtpStream};
 use log::error;
 use std::collections::HashSet;
 use std::fs::File;
@@ -21,20 +21,20 @@ impl FtpFs {
         if let Some(url) = url.strip_prefix("ftp:/") {
             // handle if we have name and no path
             if !url.contains('/') {
-                return url;
+                return Some(url);
             }
 
             if let Some(offset) = url.find('/') {
-                return &url[..offset];
+                return Some(&url[..offset]);
             }
 
         } else {
             if !url.contains('/') {
-                return url;
+                return Some(url);
             }
 
             if let Some(offset) = url.find('/') {
-                return &url[..offset];
+                return Some(&url[..offset]);
             }
         } 
 
@@ -77,21 +77,26 @@ impl VfsDriver for FtpFs {
 
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
-        if let Some(url) = Self::find_server_name(url) {
-            if let stream = match FtpStream::connect(url) {
+        if let Some(url) = Self::find_server_name("ftp.modland.com:21") {
+            dbg!("Connecting to {}", url);
+            dbg!();
+
+            let mut stream = match FtpStream::connect(url) {
                 Ok(stream) => stream,
                 Err(e) => {
-                    error!("FtpDriver error {:?}", e);
+                    dbg!();
+                    panic!("Unable to connect to {:?}", e);
                     return None;
                 }
             };
 
-            if Err(e) = ftp_stream.login("anonymous", "anonymous") {
-                error!("FtpDriver login failed {}", e);
-                return None;
-            }
+            dbg!(&stream);
 
-            return Box::new(FtpFs { data: Some(stream) })
+            stream.login("anonymous", "anonymous").unwrap();
+
+            dbg!();
+
+            return Some(Box::new(FtpFs { data: Some(stream) }))
         }
 
         None
@@ -103,6 +108,23 @@ impl VfsDriver for FtpFs {
         path: &str,
         progress: &mut Progress,
     ) -> Result<LoadStatus, InternalError> {
+        let conn = self.data.as_mut().unwrap();
+        let path = "readme_welcome.txt";
+
+        dbg!(path);
+
+        //let mut buf = Vec::new();
+
+        /*
+        conn.retr(path, |stream| {
+            stream.read_to_end(&mut buf).map_err(|e| FtpError::ConnectionError(e))
+        })?;
+        */
+        let cursor = conn.simple_retr(path)?;
+        Ok(LoadStatus::Data(cursor.into_inner().into_boxed_slice()))
+
+
+        /*
         let archive = self.data.as_mut().unwrap();
 
         if path.is_empty() {
@@ -140,64 +162,16 @@ impl VfsDriver for FtpFs {
                 progress.step()?;
             }
         }
+        */
 
-        Ok(LoadStatus::Data(output_data.into_boxed_slice()))
+        //Ok(LoadStatus::Data(buf.into_boxed_slice()))
     }
 
     fn get_directory_list(
         &self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<Vec<String>, InternalError> {
-        let archive = self.data.as_ref().unwrap();
-        let filenames = archive.file_names();
-        let match_dir: String = if path.ends_with('/') {
-            path.into()
-        } else if path.is_empty() {
-            "".into()
-        } else {
-            format!("{}/", path)
-        };
-
-        progress.set_step(3);
-
-        let dir_len = match_dir.len();
-        let mut paths = HashSet::new();
-
-        for p in filenames {
-            if !p.starts_with(&match_dir) {
-                continue;
-            }
-
-            let t = &p[dir_len..];
-
-            if let Some(pos) = t.find('/') {
-                if pos <= t.len() {
-                    paths.insert(&t[..pos]);
-                }
-            } else {
-                paths.insert(t);
-            }
-        }
-
-        progress.step()?;
-
-        let mut output = Vec::with_capacity(paths.len());
-
-        for s in paths {
-            if s.is_empty() {
-                continue;
-            }
-
-            output.push(s.to_owned());
-        }
-
-        progress.step()?;
-
-        output.sort();
-
-        progress.step()?;
-
-        Ok(output)
+    ) -> Result<FilesDirs, InternalError> {
+        Ok(FilesDirs::default())
     }
 }

@@ -8,7 +8,7 @@ use std::thread::{self};
 
 mod local_fs;
 mod zip_fs;
-//mod ftp_fs;
+mod ftp_fs;
 
 #[derive(Default, Debug)]
 pub struct FilesDirs {
@@ -49,6 +49,8 @@ pub enum InternalError {
     SendError(#[from] crossbeam_channel::SendError<RecvMsg>),
     #[error("Walkdir Error")]
     WalkdirError(#[from] walkdir::Error),
+    #[error("Ftp Error")]
+    FtpError(#[from] ftp::FtpError),
 }
 
 #[derive(Error, Debug)]
@@ -188,6 +190,7 @@ struct VfsState {
 impl VfsState {
     fn new() -> VfsState {
         let drivers: Vec<VfsDriverType> = vec![
+            Box::new(ftp_fs::FtpFs::new()),
             Box::new(zip_fs::ZipFs::new()),
             Box::new(local_fs::LocalFs::new()),
         ];
@@ -225,6 +228,8 @@ pub enum SendMsg {
 }
 
 fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
+    dbg!(&e);
+
     if let InternalError::FileError(e) = e {
         let file_error = format!("{:#?}", e);
         if let Err(send_err) = msg.send(RecvMsg::Error(e.into())) {
@@ -726,4 +731,33 @@ mod tests {
 
         panic!();
     }
+
+    #[test]
+    fn ftp_test_file() {
+        let vfs = Vfs::new();
+        let handle = vfs.load_url("ftp://ftp.modland.com/readme_welcome.txt");
+
+        for _ in 0..100 {
+            match handle.recv.try_recv() {
+                Ok(m) => {
+                    match m {
+                        RecvMsg::ReadDone(data) => {
+                            let welcome = std::str::from_utf8(&data).unwrap();
+                            assert!(welcome.contains("Welcome to Modland"));
+                            return;
+                        }
+                        _ => (),
+                    }
+                }
+                _ => (),
+
+                //Err(e) => panic!("{}", e),
+            }
+
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        panic!();
+    }
+
 }
