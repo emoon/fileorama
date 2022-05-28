@@ -87,7 +87,7 @@ impl VfsDriver for FtpFs {
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
         if let Some(url) = Self::find_server_name(url) {
-            let url_with_port = if url.contains(":") {
+            let url_with_port = if url.contains(':') {
                 url.to_owned()
             } else {
                 format!("{}:21", url)
