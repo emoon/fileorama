@@ -211,7 +211,7 @@ impl VfsDriver for ZipFs {
     }
 
     fn get_directory_list(
-        &self,
+        &mut self,
         path: &str,
         progress: &mut Progress,
     ) -> Result<FilesDirs, InternalError> {

@@ -45,6 +45,8 @@ pub enum InternalError {
     FileDirNotFound,
     #[error("File Error)")]
     FileError(#[from] std::io::Error),
+    #[error("Parse Error)")]
+    ParseError(#[from] std::num::ParseIntError),
     #[error("Send Error")]
     SendError(#[from] crossbeam_channel::SendError<RecvMsg>),
     #[error("Walkdir Error")]
@@ -92,7 +94,7 @@ pub(crate) trait VfsDriver: std::fmt::Debug {
     ) -> Result<LoadStatus, InternalError>;
     // get a file/directory listing for the driver
     fn get_directory_list(
-        &self,
+        &mut self,
         path: &str,
         progress: &mut Progress,
     ) -> Result<FilesDirs, InternalError>;
@@ -492,6 +494,7 @@ impl<'a> Loader<'a> {
                 }
 
                 LoadStatus::Data(in_data) => {
+                    dbg!(&current_path);
                     // if level is 0 then we are done, otherwise we have to continue
                     // TODO: If user has "scan" on data we need to continue here as well
                     if current_path.is_empty() {
@@ -752,7 +755,7 @@ mod tests {
         let vfs = Vfs::new();
         let handle = vfs.load_url("ftp://ftp.modland.com/allmods.zip");
 
-        for _ in 0..100 {
+        for _ in 0..1000 {
             match handle.recv.try_recv() {
                 Ok(RecvMsg::Directory(data)) => {
                     assert!(data.files.iter().any(|v| *v == "allmods.txt"));
@@ -763,6 +766,28 @@ mod tests {
                 }
                 _ => thread::sleep(std::time::Duration::from_millis(50)),
             }
+
+        }
+
+        panic!();
+    }
+
+    #[test]
+    fn ftp_test_directory_1() {
+        let vfs = Vfs::new();
+        let handle = vfs.load_url("ftp://ftp.modland.com");
+
+        for _ in 0..100 {
+            match handle.recv.try_recv() {
+                Ok(RecvMsg::Directory(data)) => {
+                    assert!(data.dirs.iter().any(|v| *v == "pub"));
+                    assert!(data.dirs.iter().any(|v| *v == "incoming"));
+                    return;
+                }
+                _ => thread::sleep(std::time::Duration::from_millis(50)),
+            }
+
+            thread::sleep(std::time::Duration::from_millis(50));
         }
 
         panic!();

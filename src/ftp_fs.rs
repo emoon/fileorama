@@ -118,9 +118,16 @@ impl VfsDriver for FtpFs {
     ) -> Result<LoadStatus, InternalError> {
         let conn = self.data.as_mut().unwrap();
 
-        if let Some(file_size) = conn.size(path)? {
-            //let cursor = conn.simple_retr(path)?;
-            //Ok(LoadStatus::Data(cursor.into_inner().into_boxed_slice()))
+        // We get a listing of the files first here because if we try to do 'SIZE' on a directory 
+        // this command will hang, if this is a fault of the FTP server or ftp-rs I don't know, but this is a workaround at least 
+        let dirs_and_files = conn.list(Some(path))?;
+
+        // To validate that we are only checking one file we expect the listing command to return one entry
+        // with the first file flag not being set to 'd' 
+        if dirs_and_files.len() == 1 && !dirs_and_files[0].starts_with('d') {
+            // split up the size so we can access the size
+            let t = dirs_and_files[0].split_whitespace().collect::<Vec<&str>>();
+            let file_size = t[4].parse::<usize>()?;
 
             let block_len = 64 * 1024;
             let loop_count = file_size / block_len;
@@ -147,15 +154,43 @@ impl VfsDriver for FtpFs {
             // if we didn't get any size here we assume it's a directory.
             Ok(LoadStatus::Directory)
         }
-
-        //Ok(LoadStatus::Data(buf.into_boxed_slice()))
     }
 
     fn get_directory_list(
-        &self,
+        &mut self,
         path: &str,
         progress: &mut Progress,
     ) -> Result<FilesDirs, InternalError> {
-        Ok(FilesDirs::default())
+        let conn = self.data.as_mut().unwrap();
+
+        progress.set_step(2);
+
+        let dirs_and_files = conn.list(Some(path))?;
+
+        let mut dirs = Vec::with_capacity(dirs_and_files.len());
+        let mut files = Vec::with_capacity(dirs_and_files.len());
+
+        progress.step()?;
+
+        for dir_file in dirs_and_files {
+            // As the result from the FTP server is given in this format we have to split the string and pick out the data we want
+            // -rw-rw-r--    1 1001       1001          5046034 May 25 16:00 allmods.zip
+            // drwxrwxr-x    7 1001       1001             4096 Jan 20  2018 incoming
+            let t = dir_file.split_whitespace().collect::<Vec<&str>>();
+
+            // if flags starts with 'd' we assume it's a directory 
+            if t[0].starts_with('d') {
+                dirs.push(t[8].to_owned());
+            } else {
+                files.push(t[8].to_owned());
+            }
+        } 
+
+        files.sort();
+        dirs.sort();
+
+        progress.step()?;
+
+        Ok(FilesDirs::new(files, dirs))
     }
 }
