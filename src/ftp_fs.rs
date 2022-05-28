@@ -1,9 +1,9 @@
 use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
 use ftp::{FtpError, FtpStream};
 use log::error;
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{Cursor, Read};
+//use std::collections::HashSet;
+//use std::fs::File;
+//use std::io::{Cursor, Read, Write};
 
 #[derive(Debug)]
 pub struct FtpFs {
@@ -72,29 +72,37 @@ impl VfsDriver for FtpFs {
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
         // Only supports urls that starts with ftp 
-        url.starts_with("ftp:/") || url.starts_with("ftp.")
+        if !url.starts_with("ftp:/") && !url.starts_with("ftp.") {
+            return false;
+        }
+
+        // Make sure we don't have any slashes in the path except ftp start
+        if let Some(url) = url.strip_prefix("ftp:/") {
+            !url.contains('/')
+        } else {
+            !url.contains('/')
+        }
     }
 
     /// Used when creating an instance of the driver with a path to load from
     fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
-        if let Some(url) = Self::find_server_name("ftp.modland.com:21") {
-            dbg!("Connecting to {}", url);
-            dbg!();
+        if let Some(url) = Self::find_server_name(url) {
+            let url_with_port = if url.contains(":") {
+                url.to_owned()
+            } else {
+                format!("{}:21", url)
+            };
 
-            let mut stream = match FtpStream::connect(url) {
+            let mut stream = match FtpStream::connect(url_with_port) {
                 Ok(stream) => stream,
                 Err(e) => {
-                    dbg!();
-                    panic!("Unable to connect to {:?}", e);
+                    error!("Unable to connect to {:?}", e);
                     return None;
                 }
             };
 
-            dbg!(&stream);
-
             stream.login("anonymous", "anonymous").unwrap();
-
-            dbg!();
+            stream.transfer_type(ftp::types::FileType::Binary).unwrap();
 
             return Some(Box::new(FtpFs { data: Some(stream) }))
         }
@@ -109,60 +117,36 @@ impl VfsDriver for FtpFs {
         progress: &mut Progress,
     ) -> Result<LoadStatus, InternalError> {
         let conn = self.data.as_mut().unwrap();
-        let path = "readme_welcome.txt";
 
-        dbg!(path);
+        if let Some(file_size) = conn.size(path)? {
+            //let cursor = conn.simple_retr(path)?;
+            //Ok(LoadStatus::Data(cursor.into_inner().into_boxed_slice()))
 
-        //let mut buf = Vec::new();
-
-        /*
-        conn.retr(path, |stream| {
-            stream.read_to_end(&mut buf).map_err(|e| FtpError::ConnectionError(e))
-        })?;
-        */
-        let cursor = conn.simple_retr(path)?;
-        Ok(LoadStatus::Data(cursor.into_inner().into_boxed_slice()))
-
-
-        /*
-        let archive = self.data.as_mut().unwrap();
-
-        if path.is_empty() {
-            return Ok(LoadStatus::Directory);
-        }
-
-        let mut file = match archive.by_name(path) {
-            Err(_) => return Ok(LoadStatus::NotFound),
-            Ok(f) => f,
-        };
-
-        if file.is_dir() {
-            return Ok(LoadStatus::Directory);
-        }
-
-        let len = file.size() as usize;
-        let mut output_data = vec![0u8; len];
-
-        // if file is small than 10k we just unpack it directly without progress
-        if len < 10 * 1024 {
-            progress.set_step(1);
-            file.read_to_end(&mut output_data)?;
-            progress.step()?;
-        } else {
-            // above 10k we read in 10 chunks
-            let loop_count = 10;
-            let block_len = len / loop_count;
-
+            let block_len = 64 * 1024;
+            let loop_count = file_size / block_len;
             progress.set_step(loop_count);
 
-            for i in 0..loop_count + 1 {
-                let block_offset = i * block_len;
-                let read_amount = usize::min(len - block_offset, block_len);
-                file.read_exact(&mut output_data[block_offset..block_offset + read_amount])?;
-                progress.step()?;
-            }
+            let output_data = conn.retr(path, |reader| {
+                let mut output_data = vec![0u8; file_size];
+                let mut pro = progress.clone();
+
+                for i in 0..loop_count + 1 {
+                    let block_offset = i * block_len;
+                    let read_amount = usize::min(file_size - block_offset, block_len);
+                    reader.read_exact(&mut output_data[block_offset..block_offset + read_amount]).map_err(FtpError::ConnectionError)?;
+                    pro.step().map_err(|op| FtpError::InvalidResponse(op.to_string()))?;
+                }
+
+                Ok(output_data)
+
+                })?;
+
+                Ok(LoadStatus::Data(output_data.into_boxed_slice()))
+
+        } else {
+            // if we didn't get any size here we assume it's a directory.
+            Ok(LoadStatus::Directory)
         }
-        */
 
         //Ok(LoadStatus::Data(buf.into_boxed_slice()))
     }

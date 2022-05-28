@@ -60,6 +60,7 @@ pub enum VfsError {
     FileError(#[from] std::io::Error),
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct Progress<'a> {
     range: (f32, f32),
     step: f32,
@@ -228,8 +229,6 @@ pub enum SendMsg {
 }
 
 fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
-    dbg!(&e);
-
     if let InternalError::FileError(e) = e {
         let file_error = format!("{:#?}", e);
         if let Err(send_err) = msg.send(RecvMsg::Error(e.into())) {
@@ -412,6 +411,7 @@ impl<'a> Loader<'a> {
                     let res = add_path_to_vfs(vfs, self.node_index, -1, &p);
                     self.node_index = res.0;
                     self.component_index += res.1;
+
                     self.state = LoadState::LoadFromDriver;
 
                     return;
@@ -452,6 +452,7 @@ impl<'a> Loader<'a> {
         // No driver found data. So we just send it back here
         // TODO: Implement scanning here
         self.msg.send(RecvMsg::ReadDone(node_data.clone()))?;
+        self.state = LoadState::Done;
 
         Ok(())
     }
@@ -459,12 +460,11 @@ impl<'a> Loader<'a> {
     // Walk a path backwards and try to load the url given a driver
     fn load_from_driver(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
         let components = &self.path_components[self.component_index..];
+
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
 
         // walk backwards from the current path and try to load the data
-        let mut level = 0;
-
         loop {
             // TODO: Fix range
             let driver = self.driver_index as usize;
@@ -474,7 +474,6 @@ impl<'a> Loader<'a> {
             match load_msg {
                 LoadStatus::Directory => {
                     let node_index = self.node_index;
-
 
                     // If the node type is unknown it means that we haven't fetched the dirs for
                     // this node yet, so do that and update the node type
@@ -495,14 +494,13 @@ impl<'a> Loader<'a> {
                 LoadStatus::Data(in_data) => {
                     // if level is 0 then we are done, otherwise we have to continue
                     // TODO: If user has "scan" on data we need to continue here as well
-                    if level == 0 {
+                    if current_path.is_empty() {
                         self.msg.send(RecvMsg::ReadDone(in_data))?;
                         self.state = LoadState::Done;
                     } else {
                         let res = add_path_to_vfs(vfs, self.node_index, -1, &p);
                         self.node_index = res.0;
                         self.component_index += res.1;
-
                         // Add new nodes to the vfs
                         self.data = Some(in_data);
                         self.state = LoadState::FindDriverData;
@@ -514,7 +512,6 @@ impl<'a> Loader<'a> {
 
             p.pop();
             current_path = p.to_string_lossy().into();
-            level += 1;
 
             if current_path.is_empty() {
                 break;
@@ -738,23 +735,34 @@ mod tests {
         let handle = vfs.load_url("ftp://ftp.modland.com/readme_welcome.txt");
 
         for _ in 0..100 {
-            match handle.recv.try_recv() {
-                Ok(m) => {
-                    match m {
-                        RecvMsg::ReadDone(data) => {
-                            let welcome = std::str::from_utf8(&data).unwrap();
-                            assert!(welcome.contains("Welcome to Modland"));
-                            return;
-                        }
-                        _ => (),
-                    }
-                }
-                _ => (),
-
-                //Err(e) => panic!("{}", e),
+            if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
+                let welcome = std::str::from_utf8(&data).unwrap();
+                assert!(welcome.contains("Welcome to Modland"));
+                return;
             }
 
             thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        panic!();
+    }
+
+    #[test]
+    fn ftp_test_large_file() {
+        let vfs = Vfs::new();
+        let handle = vfs.load_url("ftp://ftp.modland.com/allmods.zip");
+
+        for _ in 0..100 {
+            match handle.recv.try_recv() {
+                Ok(RecvMsg::Directory(data)) => {
+                    assert!(data.files.iter().any(|v| *v == "allmods.txt"));
+                    return;
+                }
+                Ok(RecvMsg::ReadProgress(_data)) => {
+                    //println!("Progress: {:?}", data);
+                }
+                _ => thread::sleep(std::time::Duration::from_millis(50)),
+            }
         }
 
         panic!();

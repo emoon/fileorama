@@ -116,9 +116,7 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        Some(Box::new(ZipFs {
-            data: ZipInternal::MemReader(a),
-        }))
+        Some(Box::new(ZipFs { data: ZipInternal::MemReader(a) }))
     }
 
     // Get some data in and returns true if driver can be mounted from it

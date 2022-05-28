@@ -1,5 +1,4 @@
 use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
-use log::trace;
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
