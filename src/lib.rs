@@ -206,6 +206,7 @@ impl VfsState {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Vfs {
     /// for sending messages to the main-thread
     main_send: crossbeam_channel::Sender<SendMsg>,
@@ -463,8 +464,12 @@ impl<'a> Loader<'a> {
     fn load_from_driver(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
         let components = &self.path_components[self.component_index..];
 
+        trace!("trying to load from {:?}", components);
+
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
+
+        trace!("current_path {:?}", current_path);
 
         // walk backwards from the current path and try to load the data
         loop {

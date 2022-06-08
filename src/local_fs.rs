@@ -1,5 +1,6 @@
 use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
 use std::{fs::File, io::Read, path::PathBuf};
+use log::trace;
 use walkdir::WalkDir;
 
 #[derive(Debug)]
@@ -22,12 +23,15 @@ impl VfsDriver for LocalFs {
 
     // Supports loading all file extensions
     fn supports_url(&self, path: &str) -> bool {
+        trace!("supports_url: {}", path);
         // we don't support url style paths like ftp:// http:// etc.
         !path.contains(":/")
     }
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
-        std::fs::metadata(url).is_ok()
+        let t = std::fs::metadata(url).is_ok();
+        trace!("Can load from path {} : {}", url, t);
+        t
     }
 
     // Local filesystem can't be loaded from data
@@ -54,17 +58,22 @@ impl VfsDriver for LocalFs {
         path: &str,
         progress: &mut Progress,
     ) -> Result<LoadStatus, InternalError> {
-        let path = self.root.join(path);
+        let path = if path.is_empty() {
+            self.root.clone()
+        } else {
+            self.root.join(path)
+        };
 
         let metadata = std::fs::metadata(&path)?;
 
         if metadata.is_dir() {
+            trace!("load_url: {:?} is a directory", path);
             return Ok(LoadStatus::Directory);
         }
 
+        let mut output_data = Vec::new();
         let len = metadata.len() as usize;
         let mut file = File::open(&path)?;
-        let mut output_data = vec![0u8; len];
 
         // if file is small than 5 meg we just load it fully directly to memory
         if len < 5 * 1024 * 1024 {
@@ -72,6 +81,7 @@ impl VfsDriver for LocalFs {
             file.read_to_end(&mut output_data)?;
             progress.step()?;
         } else {
+            output_data = vec![0u8; len];
             // above 5 meg we read in 10 chunks
             let loop_count = 10;
             let block_len = len / loop_count;
@@ -84,6 +94,8 @@ impl VfsDriver for LocalFs {
                 progress.step()?;
             }
         }
+
+        trace!("load_url: Loaded file {:?} to memory", path);
 
         Ok(LoadStatus::Data(output_data.into_boxed_slice()))
     }
