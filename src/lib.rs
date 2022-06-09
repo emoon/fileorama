@@ -322,7 +322,7 @@ fn add_files_dirs_to_vfs(vfs: &mut VfsState, node_index: usize, files_dirs: File
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum LoadState {
     FindNode,
     FindDriverUrl,
@@ -452,6 +452,8 @@ impl<'a> Loader<'a> {
             }
         }
 
+        trace!("No driver found, sending data as is {}", node_data.len());
+
         // No driver found data. So we just send it back here
         // TODO: Implement scanning here
         self.msg.send(RecvMsg::ReadDone(node_data.clone()))?;
@@ -464,12 +466,8 @@ impl<'a> Loader<'a> {
     fn load_from_driver(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
         let components = &self.path_components[self.component_index..];
 
-        trace!("trying to load from {:?}", components);
-
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
-
-        trace!("current_path {:?}", current_path);
 
         // walk backwards from the current path and try to load the data
         loop {
@@ -512,6 +510,7 @@ impl<'a> Loader<'a> {
                         // Add new nodes to the vfs
                         self.data = Some(in_data);
                         self.state = LoadState::FindDriverData;
+                        return Ok(());
                     }
                 }
 
@@ -602,6 +601,8 @@ pub(crate) fn load(
     let mut loader = Loader::new(path, msg);
 
     loop {
+        trace!("{:?}", loader.state);
+
         match loader.state {
             LoadState::FindNode => loader.find_node(vfs),
             LoadState::FindDriverUrl => loader.find_driver_url(vfs),
