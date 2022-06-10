@@ -5,7 +5,7 @@ use walkdir::WalkDir;
 
 #[derive(Debug)]
 pub struct LocalFs {
-    root: PathBuf,
+    pub root: PathBuf,
 }
 
 impl LocalFs {
@@ -44,6 +44,7 @@ impl VfsDriver for LocalFs {
     }
 
     fn create_from_url(&self, path: &str) -> Option<VfsDriverType> {
+        trace!("Created driver at {}", path);
         Some(Box::new(LocalFs { root: path.into() }))
     }
 
@@ -63,6 +64,8 @@ impl VfsDriver for LocalFs {
         } else {
             self.root.join(path)
         };
+
+        trace!("trying loading from {:?}", path);
 
         let metadata = std::fs::metadata(&path)?;
 

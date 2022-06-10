@@ -198,10 +198,20 @@ impl VfsState {
             Box::new(local_fs::LocalFs::new()),
         ];
 
+        let mut nodes = vec![
+            Node::new_directory_node("root".into(), 0),
+            Node::new_directory_node("/".into(), 0)
+        ];
+
+        // link root
+        nodes[1].parent = 0;
+        nodes[1].driver_index = 0;
+        nodes[0].nodes.push(1);
+
         VfsState {
             drivers,
-            nodes: vec![Node::new_directory_node("root".into(), 0)],
-            ..Default::default()
+            nodes,
+            node_drivers: vec![Box::new(local_fs::LocalFs { root: "/".into() } )],
         }
     }
 }
@@ -294,11 +304,11 @@ fn add_path_to_vfs(
     let mut prefix = false;
     let mut current_index = index;
 
-    for c in path.components() {
+    for (i, c) in path.components().enumerate() {
         let new_node = Node {
             node_type: NodeType::Unknown,
             parent: current_index as _,
-            driver_index,
+            driver_index: -1,
             name: get_component_name(&c, &mut prefix).to_string(),
             ..Default::default()
         };
@@ -309,6 +319,48 @@ fn add_path_to_vfs(
 
     (current_index, count)
 }
+
+fn add_path_to_vfs_new_driver(
+    vfs: &mut VfsState,
+    driver_path: &str,
+    index: usize,
+    driver_index: i32,
+    path: &Path,
+) -> (usize, usize) {
+    let mut count = 0;
+    let mut prefix = false;
+    let mut current_index = index;
+    let current_path = PathBuf::new();
+
+    trace!("{:?}", path);
+
+    for (i, c) in path.components().enumerate() {
+        // TODO: Optimize
+        let current_path = current_path.join(c);
+
+        trace!("{:?} {}", current_path, driver_path);
+
+        let driver_assign = if current_path.to_string_lossy() == driver_path {
+            driver_index
+        } else {
+            -1
+        };
+
+        let new_node = Node {
+            node_type: NodeType::Unknown,
+            parent: current_index as _,
+            driver_index: driver_assign,
+            name: get_component_name(&c, &mut prefix).to_string(),
+            ..Default::default()
+        };
+
+        current_index = add_new_node(vfs, current_index, new_node);
+        count += 1;
+    }
+
+    (current_index, count)
+}
+
 
 fn add_files_dirs_to_vfs(vfs: &mut VfsState, node_index: usize, files_dirs: FilesDirs) {
     for name in files_dirs.dirs {
@@ -368,6 +420,9 @@ impl<'a> Loader<'a> {
     // Search the vfs for a companont
     fn find_node(&mut self, vfs: &mut VfsState) {
         let components = &self.path_components[self.component_index..];
+
+        trace!("Searching for node: {:?}", components);
+
         // Search for node in the vfs
         for c in components.iter() {
             let node = &vfs.nodes[self.node_index];
@@ -377,10 +432,17 @@ impl<'a> Loader<'a> {
                 self.component_index += 1;
                 // If we don't have any driver yet and we didn't find a path we must search for a driver
             } else if self.component_index == 0 {
+                trace!("Switching FindNode -> FindDriverUrl: {:?}", &components[self.component_index..]);
                 self.state = LoadState::FindDriverUrl;
                 return;
             } else {
-                self.state = LoadState::LoadFromDriver;
+                trace!("Switching FindNode -> FindDriverUrl: {:?} - driver_index {}", component_name, node.driver_index);
+                if vfs.nodes[self.node_index].driver_index != -1 {
+                    self.driver_index = vfs.nodes[self.node_index].driver_index as _;
+                    self.state = LoadState::LoadFromDriver;
+                } else {
+                    self.state = LoadState::LoadFromNode;
+                }
                 return;
             }
         }
@@ -411,7 +473,10 @@ impl<'a> Loader<'a> {
                     self.driver_index = vfs.node_drivers.len() as _;
                     vfs.node_drivers.push(new_driver);
 
-                    let res = add_path_to_vfs(vfs, self.node_index, -1, &p);
+                    trace!("Creating new driver at {}", current_path);
+                    vfs.nodes[self.node_index].driver_index = self.driver_index as _;
+
+                    let res = add_path_to_vfs_new_driver(vfs, &current_path, self.node_index, self.driver_index as _,&p);
                     self.node_index = res.0;
                     self.component_index += res.1;
 
@@ -469,6 +534,8 @@ impl<'a> Loader<'a> {
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
 
+        trace!("Loading from driver {} : {}", &current_path, self.driver_index);
+
         // walk backwards from the current path and try to load the data
         loop {
             // TODO: Fix range
@@ -504,14 +571,15 @@ impl<'a> Loader<'a> {
                         self.msg.send(RecvMsg::ReadDone(in_data))?;
                         self.state = LoadState::Done;
                     } else {
-                        let res = add_path_to_vfs(vfs, self.node_index, -1, &p);
+                        let res = add_path_to_vfs(vfs, self.node_index, self.driver_index as _, &p);
                         self.node_index = res.0;
                         self.component_index += res.1;
                         // Add new nodes to the vfs
                         self.data = Some(in_data);
                         self.state = LoadState::FindDriverData;
-                        return Ok(());
                     }
+
+                    return Ok(());
                 }
 
                 _ => (),
@@ -539,16 +607,22 @@ impl<'a> Loader<'a> {
     fn load_from_node(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
         let mut node_index = self.node_index;
 
-        for i in self.path_components.len()..0 {
+        //trace!("node index {} : {}", node_index, self.path_components.len());
+
+        for i in (0..self.component_index).rev() {
+            let driver_index = vfs.nodes[node_index].driver_index;
+
             // Search for a node that has a proper driver
-            if vfs.nodes[node_index].driver_index != -1 {
+            if driver_index != -1 {
                 let components = &self.path_components[i..];
                 let p: PathBuf = components.iter().collect();
                 let current_path: String = p.to_string_lossy().into();
 
+                trace!("loading from driver {} path {}", driver_index, &current_path);
+
                 // construct the path to load from the driver
                 let mut progress = Progress::new(0.0, 1.0, self.msg);
-                let load_msg = vfs.node_drivers[self.driver_index as usize]
+                let load_msg = vfs.node_drivers[driver_index as usize]
                     .load_url(&current_path, &mut progress)?;
 
                 match load_msg {
@@ -565,6 +639,7 @@ impl<'a> Loader<'a> {
         }
 
         self.msg.send(RecvMsg::NotFound)?;
+        self.state = LoadState::Done;
 
         Ok(())
     }
@@ -593,6 +668,25 @@ impl<'a> Loader<'a> {
     }
 }
 
+
+
+fn print_tree(state: &VfsState, index: u32, parent: u32, indent: usize) {
+    let node = &state.nodes[index as usize];
+
+    println!(
+        "{:indent$} {} driver {}",
+        "",
+        node.name,
+        node.driver_index,
+        indent = indent
+    );
+
+    for n in &node.nodes {
+        print_tree(state, *n, node.parent, indent + 1);
+    }
+}
+
+
 pub(crate) fn load(
     vfs: &mut VfsState,
     path: &str,
@@ -600,8 +694,13 @@ pub(crate) fn load(
 ) -> Result<(), InternalError> {
     let mut loader = Loader::new(path, msg);
 
+    trace!("start processing {}", path);
+    trace!("current tree");
+
+    print_tree(vfs, 0, 0, 0);
+
     loop {
-        trace!("{:?}", loader.state);
+        //trace!("{:?}", loader.state);
 
         match loader.state {
             LoadState::FindNode => loader.find_node(vfs),
@@ -609,10 +708,12 @@ pub(crate) fn load(
             LoadState::FindDriverData => loader.find_driver_data(vfs)?,
             LoadState::LoadFromDriver => loader.load_from_driver(vfs)?,
             LoadState::LoadFromNode => loader.load_from_node(vfs)?,
-            LoadState::Done => return Ok(()),
-            LoadState::UnsupportedPath => return Ok(()),
+            LoadState::Done => break,
+            LoadState::UnsupportedPath => break,
         }
     }
+
+    Ok(())
 }
 
 fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg) {
@@ -656,24 +757,6 @@ impl Default for Vfs {
 mod tests {
     use super::*;
 
-    /*
-    fn print_tree(state: &VfsState, index: u32, parent: u32, indent: usize) {
-        let node = &state.nodes[index as usize];
-
-        println!(
-            "{:indent$} {} driver {}",
-            "",
-            node.name,
-            node.driver_index,
-            indent = indent
-        );
-
-        for n in &node.nodes {
-            print_tree(state, *n, node.parent, indent + 1);
-        }
-    }
-     */
-
     #[test]
     fn vfs_load_zip() {
         let mut path = std::fs::canonicalize("data/a.zip").unwrap();
@@ -714,6 +797,44 @@ mod tests {
         }
 
         panic!();
+    }
+
+    #[test]
+    fn vfs_two_local_files() {
+        let vfs = Vfs::new();
+
+        let path = std::fs::canonicalize(".").unwrap();
+        let path = path.join("Cargo.toml");
+
+        let handle = vfs.load_url(&path.to_string_lossy());
+        let mut read_cargo_toml = false;
+
+        for _ in 0..100 {
+            if let Ok(RecvMsg::ReadDone(_data)) = handle.recv.try_recv() {
+                read_cargo_toml = true;
+                break;
+            }
+
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        let path = std::fs::canonicalize(".").unwrap();
+        let path = path.join("data/test_dir/dummy");
+
+        let handle = vfs.load_url(&path.to_string_lossy());
+        let mut read_dummy = false;
+
+        for _ in 0..100 {
+            if let Ok(RecvMsg::ReadDone(_data)) = handle.recv.try_recv() {
+                read_dummy = true;
+                break;
+            }
+
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert!(read_cargo_toml);
+        assert!(read_dummy);
     }
 
     #[test]
