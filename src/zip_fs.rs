@@ -1,9 +1,14 @@
 use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
-use log::error;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
+
+#[cfg(not(test))]
+use log::{error, trace};
+
+#[cfg(test)]
+use std::{println as trace, println as error};
 
 #[derive(Debug)]
 enum ZipInternal {
@@ -84,9 +89,9 @@ impl ZipFs {
 }
 
 impl VfsDriver for ZipFs {
-    /// This indicates that the file system is remote (such as ftp, https) and has no local path
+    /// We return true here as we don't know 
     fn is_remote(&self) -> bool {
-        false
+        true
     }
 
     /// If the driver supports a certain url
@@ -133,7 +138,9 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        zip::ZipArchive::new(read_file).is_ok()
+        let t = zip::ZipArchive::new(read_file).is_ok();
+        trace!("zip_fs: can load from url {} - {}", url, t);
+        t
     }
 
     /// Used when creating an instance of the driver with a path to load from

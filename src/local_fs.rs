@@ -1,7 +1,12 @@
 use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
 use std::{fs::File, io::Read, path::PathBuf};
-use log::trace;
 use walkdir::WalkDir;
+
+#[cfg(not(test))]
+use log::{trace};
+
+#[cfg(test)]
+use std::{println as trace};
 
 #[derive(Debug)]
 pub struct LocalFs {
@@ -19,6 +24,10 @@ impl LocalFs {
 impl VfsDriver for LocalFs {
     fn is_remote(&self) -> bool {
         false
+    }
+
+    fn should_assign_driver_id(&self) -> bool { 
+        false 
     }
 
     // Supports loading all file extensions
