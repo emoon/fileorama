@@ -15,8 +15,8 @@ use std::{println as info, println as trace};
 
 #[derive(Default, Debug)]
 pub struct FilesDirs {
-    files: Vec<String>,
-    dirs: Vec<String>,
+    pub files: Vec<String>,
+    pub dirs: Vec<String>,
 }
 
 impl FilesDirs {
@@ -106,6 +106,7 @@ pub(crate) trait VfsDriver: std::fmt::Debug {
     ) -> Result<FilesDirs, InternalError>;
 }
 
+#[derive(Clone)]
 pub struct Handle {
     pub recv: crossbeam_channel::Receiver<RecvMsg>,
 }
@@ -169,6 +170,16 @@ impl Node {
     fn new_directory_node(name: String, parent: u32) -> Node {
         Node {
             node_type: NodeType::Directory,
+            driver_index: -1,
+            parent,
+            name,
+            ..Default::default()
+        }
+    }
+
+    fn new_unknown_node(name: String, parent: u32) -> Node {
+        Node {
+            node_type: NodeType::Unknown,
             driver_index: -1,
             parent,
             name,
@@ -357,13 +368,13 @@ fn add_path_to_vfs_new_driver(
 }
 
 
-fn add_files_dirs_to_vfs(vfs: &mut VfsState, path_components: &[Component], in_index: usize, files_dirs: FilesDirs) -> usize {
+fn add_files_dirs_to_vfs(vfs: &mut VfsState, components: &[Component], in_index: usize, files_dirs: FilesDirs) -> usize {
     let mut index = in_index;
     let mut had_prefix = false;
     let mut search_nodes = true;
 
     // First loop over the path and see if we need create k
-    for c in path_components.iter() {
+    for c in components.iter() {
         let node = &vfs.nodes[index];
         let component_name = get_component_name(c, &mut had_prefix);
         if search_nodes {
@@ -376,7 +387,7 @@ fn add_files_dirs_to_vfs(vfs: &mut VfsState, path_components: &[Component], in_i
         }
 
         // if we are here we need to add the remaining nodes to the vfs
-        let new_node = Node::new_directory_node(component_name.into(), index as _);
+        let new_node = Node::new_unknown_node(component_name.into(), index as _);
         index = add_new_node(vfs, index, new_node);
     }
 
@@ -386,7 +397,7 @@ fn add_files_dirs_to_vfs(vfs: &mut VfsState, path_components: &[Component], in_i
     }
 
     for name in files_dirs.dirs {
-        let new_node = Node::new_directory_node(name, index as _);
+        let new_node = Node::new_unknown_node(name, index as _);
         add_new_node(vfs, index, new_node);
     }
 
@@ -600,28 +611,7 @@ impl<'a> Loader<'a> {
 
             match load_msg {
                 LoadStatus::Directory => {
-                    let node_index = self.node_index;
-
-                    trace!("Found directory {} - {}", node_index, current_path);
-
-                    trace!("{:?}", vfs.nodes[node_index].node_type);
-
-                    // If the node type is unknown it means that we haven't fetched the dirs for
-                    // this node yet, so do that and update the node type
-                    //if vfs.nodes[node_index].node_type == NodeType::Unknown {
-                    let files_dirs = vfs.node_drivers[driver]
-                        .get_directory_list(&current_path, &mut progress)?;
-
-                    trace!("{:?}", files_dirs);
-
-                    let node_index = add_files_dirs_to_vfs(vfs, components, node_index, files_dirs);
-                    vfs.nodes[node_index].node_type = NodeType::Directory;
-
-                    trace!("dir node name {}", vfs.nodes[node_index].name);
-
-                    self.send_directory_for_node(vfs, node_index)?;
-                    self.state = LoadState::Done;
-                    return Ok(());
+                    return self.add_dir_to_vfs(vfs, self.component_index, &current_path, &mut progress, driver, self.node_index);
                 }
 
                 LoadStatus::Data(in_data) => {
@@ -668,11 +658,10 @@ impl<'a> Loader<'a> {
     fn load_from_node(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
         let mut node_index = self.node_index;
 
-        trace!("{} {} {:?}", self.component_index, self.path_components.len(), vfs.nodes[node_index].node_type);
-
         // if we have travered to the end of the path and we know that it's a directory we don't need to ask the driver
         // to load any data and we can just return it back directly here.
         if self.component_index == self.path_components.len() && vfs.nodes[node_index].node_type == NodeType::Directory {
+            trace!("Sending cached directory for node {}", vfs.nodes[node_index].name);
             self.send_directory_for_node(vfs, node_index)?;
             self.state = LoadState::Done;
             return Ok(());
@@ -699,7 +688,9 @@ impl<'a> Loader<'a> {
                     .load_url(&current_path, &mut progress)?;
 
                 match load_msg {
-                    LoadStatus::Directory => self.send_directory_for_node(vfs, node_index)?,
+                    LoadStatus::Directory => {
+                        return self.add_dir_to_vfs(vfs, i, &current_path, &mut progress, driver_index as usize, self.node_index);
+                    }
                     LoadStatus::Data(in_data) => self.msg.send(RecvMsg::ReadDone(in_data))?,
                     LoadStatus::NotFound => self.msg.send(RecvMsg::NotFound)?,
                 }
@@ -712,6 +703,28 @@ impl<'a> Loader<'a> {
         }
 
         self.msg.send(RecvMsg::NotFound)?;
+        self.state = LoadState::Done;
+
+        Ok(())
+    }
+
+    fn add_dir_to_vfs(&mut self, vfs: &mut VfsState, comp_index: usize,
+        current_path: &str, progress: &mut Progress, driver: usize, index: usize) -> Result<(), InternalError> {
+        let mut node_index = index;
+        let components = &self.path_components[comp_index..];
+
+        trace!("Found directory {} - {} - {:?}", vfs.nodes[index].name, current_path, components);
+
+        if vfs.nodes[node_index].node_type != NodeType::Directory {
+            // If the node type is unknown it means that we haven't fetched the dirs for
+            // this node yet, so do that and update the node type
+            //if vfs.nodes[node_index].node_type == NodeType::Unknown {
+            let files_dirs = vfs.node_drivers[driver].get_directory_list(current_path, progress)?;
+            node_index = add_files_dirs_to_vfs(vfs, components, node_index, files_dirs);
+            vfs.nodes[node_index].node_type = NodeType::Directory;
+        }
+
+        self.send_directory_for_node(vfs, node_index)?;
         self.state = LoadState::Done;
 
         Ok(())
@@ -770,7 +783,7 @@ pub(crate) fn load(
     trace!("start processing {}", path);
     trace!("current tree");
 
-    print_tree(vfs, 0, 0, 0);
+    //print_tree(vfs, 0, 0, 0);
 
     loop {
         //trace!("{:?}", loader.state);

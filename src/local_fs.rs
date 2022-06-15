@@ -121,6 +121,8 @@ impl VfsDriver for LocalFs {
         let mut dirs = Vec::with_capacity(256);
         let mut files = Vec::with_capacity(256);
 
+        trace!("Getting directory listing for {:?}", &self.root.join(path));
+
         // skip 1 skips the inital directory as it's included otherwise
         for e in WalkDir::new(self.root.join(path)).max_depth(1).into_iter().skip(1) {
             let file = e?;
