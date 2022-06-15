@@ -310,7 +310,7 @@ fn add_path_to_vfs(
     let mut prefix = false;
     let mut current_index = index;
 
-    for (i, c) in path.components().enumerate() {
+    for c in path.components() {
         let new_node = Node {
             node_type: NodeType::Unknown,
             parent: current_index as _,
@@ -325,48 +325,6 @@ fn add_path_to_vfs(
 
     (current_index, count)
 }
-
-fn add_path_to_vfs_new_driver(
-    vfs: &mut VfsState,
-    driver_path: &str,
-    index: usize,
-    driver_index: i32,
-    path: &Path,
-) -> (usize, usize) {
-    let mut count = 0;
-    let mut prefix = false;
-    let mut current_index = index;
-    let current_path = PathBuf::new();
-
-    trace!("{:?}", path);
-
-    for (i, c) in path.components().enumerate() {
-        // TODO: Optimize
-        let current_path = current_path.join(c);
-
-        trace!("{:?} {}", current_path, driver_path);
-
-        let driver_assign = if current_path.to_string_lossy() == driver_path {
-            driver_index
-        } else {
-            -1
-        };
-
-        let new_node = Node {
-            node_type: NodeType::Unknown,
-            parent: current_index as _,
-            driver_index: driver_assign,
-            name: get_component_name(&c, &mut prefix).to_string(),
-            ..Default::default()
-        };
-
-        current_index = add_new_node(vfs, current_index, new_node);
-        count += 1;
-    }
-
-    (current_index, count)
-}
-
 
 fn add_files_dirs_to_vfs(vfs: &mut VfsState, components: &[Component], in_index: usize, files_dirs: FilesDirs) -> usize {
     let mut index = in_index;
@@ -538,7 +496,6 @@ impl<'a> Loader<'a> {
                     //vfs.nodes[self.node_index].driver_index = self.driver_index as _;
 
                     let res = add_path_to_vfs(vfs, self.node_index, &p);
-                    //let res = add_path_to_vfs_new_driver(vfs, &current_path, self.node_index, self.driver_index as _,&p);
                     self.node_index = res.0;
                     self.component_index += res.1;
 
@@ -615,7 +572,6 @@ impl<'a> Loader<'a> {
                 }
 
                 LoadStatus::Data(in_data) => {
-                    dbg!(&current_path);
                     // if level is 0 then we are done, otherwise we have to continue
                     // TODO: If user has "scan" on data we need to continue here as well
                     if current_path.is_empty() {
@@ -756,7 +712,8 @@ impl<'a> Loader<'a> {
 
 
 
-fn print_tree(state: &VfsState, index: u32, parent: u32, indent: usize) {
+/*
+fn print_tree(state: &VfsState, index: u32, _parent: u32, indent: usize) {
     let node = &state.nodes[index as usize];
 
     println!(
@@ -771,6 +728,7 @@ fn print_tree(state: &VfsState, index: u32, parent: u32, indent: usize) {
         print_tree(state, *n, node.parent, indent + 1);
     }
 }
+*/
 
 
 pub(crate) fn load(
