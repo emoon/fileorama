@@ -11,7 +11,7 @@ mod zip_fs;
 mod ftp_fs;
 
 #[cfg(test)]
-use std::{println as info, println as trace};
+use std::println as trace;
 
 #[derive(Default, Debug)]
 pub struct FilesDirs {
