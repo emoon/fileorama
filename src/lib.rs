@@ -974,7 +974,7 @@ mod tests {
                 return;
             }
 
-            thread::sleep(std::time::Duration::from_millis(10));
+            thread::sleep(std::time::Duration::from_millis(22));
         }
 
         panic!();
