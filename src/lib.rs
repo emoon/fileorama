@@ -33,8 +33,8 @@ unsafe impl Sync for Data {}
 unsafe impl Send for Data {}
 
 pub struct Data {
-    ptr: *const u8,
-    size: usize,
+    pub ptr: *const u8,
+    pub size: usize,
 }
 
 impl Data {
