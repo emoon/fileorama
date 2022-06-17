@@ -13,6 +13,10 @@ mod ftp_fs;
 #[cfg(test)]
 use std::println as trace;
 
+// Used for keeping data a alive for a while. This is useful as some data may have been loaded and then it's
+// common that another system wants to read the same data. We keep it alive for this amount of entries at the same time
+const MAX_CACHE_COUNT:usize = 5;
+
 #[derive(Default, Debug)]
 pub struct FilesDirs {
     pub files: Vec<String>,
@@ -25,9 +29,30 @@ impl FilesDirs {
     }
 }
 
+unsafe impl Sync for Data {}
+unsafe impl Send for Data {}
+
+pub struct Data {
+    ptr: *const u8,
+    size: usize,
+}
+
+impl Data {
+    pub fn new(data: &[u8]) -> Data {
+        Data {
+            ptr: data.as_ptr(),
+            size: data.len(),
+        }
+    }
+
+    pub fn get(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.size)}
+    }
+}
+
 pub enum RecvMsg {
     ReadProgress(f32),
-    ReadDone(Box<[u8]>),
+    ReadDone(Data),
     Error(VfsError),
     Directory(FilesDirs),
     NotFound,
@@ -200,11 +225,17 @@ impl Node {
 
 type VfsDriverType = Box<dyn VfsDriver>;
 
+struct CachedDataEntry {
+    path: String,
+    data: Box<[u8]>,
+}
+
 #[derive(Default)]
 struct VfsState {
     nodes: Vec<Node>,
     node_drivers: Vec<VfsDriverType>,
     drivers: Vec<VfsDriverType>,
+    cached_data: Vec<CachedDataEntry>, 
 }
 
 impl VfsState {
@@ -218,6 +249,7 @@ impl VfsState {
         VfsState {
             drivers,
             nodes: vec![Node::new_directory_node("root".into(), 0)],
+            cached_data: Vec::with_capacity(MAX_CACHE_COUNT),
             ..Default::default()
         }
     }
@@ -381,6 +413,7 @@ enum LoadState {
 struct Loader<'a> {
     state: LoadState,
     path_components: Vec<Component<'a>>,
+    path_str: String,
     component_index: usize,
     node_index: usize,
     driver_index: isize,
@@ -401,6 +434,7 @@ impl<'a> Loader<'a> {
         Loader {
             state: LoadState::FindNode,
             path_components: Path::new(path).components().collect(),
+            path_str: path.to_owned(),
             component_index: 0,
             node_index: 0,
             driver_index: -1,
@@ -543,9 +577,8 @@ impl<'a> Loader<'a> {
 
         // No driver found data. So we just send it back here
         // TODO: Implement scanning here
-        self.msg.send(RecvMsg::ReadDone(node_data.clone()))?;
-        self.state = LoadState::Done;
-
+        let t = node_data.clone();
+        self.send_data(vfs, t)?;
         Ok(())
     }
 
@@ -574,8 +607,7 @@ impl<'a> Loader<'a> {
                     // if level is 0 then we are done, otherwise we have to continue
                     // TODO: If user has "scan" on data we need to continue here as well
                     if current_path.is_empty() {
-                        self.msg.send(RecvMsg::ReadDone(in_data))?;
-                        self.state = LoadState::Done;
+                        self.send_data(vfs, in_data)?;
                     } else {
                         let res = add_path_to_vfs(vfs, self.node_index, &p);
                         self.node_index = res.0;
@@ -646,7 +678,7 @@ impl<'a> Loader<'a> {
                     LoadStatus::Directory => {
                         return self.add_dir_to_vfs(vfs, i, &current_path, &mut progress, driver_index as usize, self.node_index);
                     }
-                    LoadStatus::Data(in_data) => self.msg.send(RecvMsg::ReadDone(in_data))?,
+                    LoadStatus::Data(in_data) => self.send_data(vfs, in_data)?,
                     LoadStatus::NotFound => self.msg.send(RecvMsg::NotFound)?,
                 }
 
@@ -707,6 +739,27 @@ impl<'a> Loader<'a> {
         self.msg.send(RecvMsg::Directory(FilesDirs::new(files, dirs)))?;
         Ok(())
     }
+
+    fn send_data(&mut self, vfs: &mut VfsState, data: Box<[u8]>) -> Result<(), InternalError> {
+        // check if the cache is full, in that case remove the last entry
+        if vfs.cached_data.len() >= MAX_CACHE_COUNT {
+            vfs.cached_data.remove(0);
+        } 
+
+        let ret_data = Data::new(&data);
+
+        let cache_entry = CachedDataEntry {
+            path: self.path_str.to_owned(),
+            data,
+        };
+
+        vfs.cached_data.push(cache_entry);
+
+        self.msg.send(RecvMsg::ReadDone(ret_data))?;
+        self.state = LoadState::Done;
+
+        Ok(())
+    }
 }
 
 
@@ -737,9 +790,16 @@ pub(crate) fn load(
 ) -> Result<(), InternalError> {
     let mut loader = Loader::new(path, msg);
 
-    trace!("start processing {}", path);
-    trace!("current tree");
+    // first we look in the cache if we have data there and then send that back
+    for e in &vfs.cached_data {
+        if e.path == path {
+            trace!("Sending data for path {} as cached", path);
+            msg.send(RecvMsg::ReadDone(Data::new(&e.data)))?;
+            return Ok(());
+        }
+    }
 
+    trace!("start processing {}", path);
     //print_tree(vfs, 0, 0, 0);
 
     loop {
@@ -891,7 +951,7 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
-                assert!(data.len() > 2);
+                assert!(data.get().len() > 2);
                 return;
             }
 
@@ -940,6 +1000,39 @@ mod tests {
     }
 
     #[test]
+    fn vfs_read_same_file_twice() {
+        let vfs = Vfs::new();
+
+        let path = std::fs::canonicalize(".").unwrap();
+        let path = path.join("Cargo.toml");
+
+        let handle = vfs.load_url(&path.to_string_lossy());
+        let mut data_size = 1;
+        let mut data_size_2 = 2;
+
+        for _ in 0..100 {
+            if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
+                data_size = data.get().len(); 
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        let handle = vfs.load_url(&path.to_string_lossy());
+
+        for _ in 0..100 {
+            if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
+                data_size_2 = data.get().len(); 
+                break;
+            }
+
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert_eq!(data_size, data_size_2);
+    }
+
+    #[test]
     fn vfs_zip_dir() {
         let path = std::fs::canonicalize("data/a.zip").unwrap();
 
@@ -968,7 +1061,7 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
-                let welcome = std::str::from_utf8(&data).unwrap();
+                let welcome = std::str::from_utf8(data.get()).unwrap();
                 assert!(welcome.contains("Welcome to Modland"));
                 return;
             }
