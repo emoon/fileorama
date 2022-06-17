@@ -1,9 +1,17 @@
 use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
 use ftp::{FtpError, FtpStream};
 use log::error;
+use std::path::MAIN_SEPARATOR;
 //use std::collections::HashSet;
 //use std::fs::File;
 //use std::io::{Cursor, Read, Write};
+
+// This is kinda ugly, but better than testing non-supported paths on a remote server
+#[cfg(target_os = "windows")]
+pub const FTP_URL:&str = "ftp:\\";
+
+#[cfg(not(target_os = "windows"))]
+pub const FTP_URL:&str = "ftp:/";
 
 #[derive(Debug)]
 pub struct FtpFs {
@@ -18,22 +26,22 @@ impl FtpFs {
 
 impl FtpFs {
     fn find_server_name(url: &str) -> Option<&str> {
-        if let Some(url) = url.strip_prefix("ftp:/") {
+        if let Some(url) = url.strip_prefix(FTP_URL) {
             // handle if we have name and no path
-            if !url.contains('/') {
+            if !url.contains(MAIN_SEPARATOR) {
                 return Some(url);
             }
 
-            if let Some(offset) = url.find('/') {
+            if let Some(offset) = url.find(MAIN_SEPARATOR) {
                 return Some(&url[..offset]);
             }
 
         } else {
-            if !url.contains('/') {
+            if !url.contains(MAIN_SEPARATOR) {
                 return Some(url);
             }
 
-            if let Some(offset) = url.find('/') {
+            if let Some(offset) = url.find(MAIN_SEPARATOR) {
                 return Some(&url[..offset]);
             }
         } 
@@ -48,10 +56,14 @@ impl VfsDriver for FtpFs {
         true
     }
 
+    fn name(&self) -> &'static str {
+        "ftp_fs"
+    }
+
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool {
         // Only supports urls that starts with ftp 
-        url.starts_with("ftp:/") || url.starts_with("ftp.")
+        url.starts_with(FTP_URL) || url.starts_with("ftp.")
     }
 
     // Create a new instance given data. The VfsDriver will take ownership of the data
@@ -72,15 +84,15 @@ impl VfsDriver for FtpFs {
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
         // Only supports urls that starts with ftp 
-        if !url.starts_with("ftp:/") && !url.starts_with("ftp.") {
+        if !url.starts_with(FTP_URL) && !url.starts_with("ftp.") {
             return false;
         }
 
         // Make sure we don't have any slashes in the path except ftp start
-        if let Some(url) = url.strip_prefix("ftp:/") {
-            !url.contains('/')
+        if let Some(url) = url.strip_prefix(FTP_URL) {
+            !url.contains(MAIN_SEPARATOR)
         } else {
-            !url.contains('/')
+            !url.contains(MAIN_SEPARATOR)
         }
     }
 

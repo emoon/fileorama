@@ -26,8 +26,8 @@ impl VfsDriver for LocalFs {
         false
     }
 
-    fn should_assign_driver_id(&self) -> bool { 
-        false 
+    fn name(&self) -> &'static str {
+        "local_fs"
     }
 
     // Supports loading all file extensions

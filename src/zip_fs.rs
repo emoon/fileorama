@@ -3,6 +3,14 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
+use std::borrow::Cow;
+
+// This is kinda ugly, but better than testing non-supported paths on a remote server
+#[cfg(target_os = "windows")]
+pub const FTP_CHECK:&str = "ftp:\\";
+
+#[cfg(not(target_os = "windows"))]
+pub const FTP_CHECK:&str = "ftp:/";
 
 #[cfg(not(test))]
 use log::{error, trace};
@@ -94,10 +102,13 @@ impl VfsDriver for ZipFs {
         true
     }
 
+    fn name(&self) -> &'static str {
+        "zip_fs"
+    }
+
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool {
-        // we don't support url style paths like ftp:// http:// etc.
-        !url.contains(":/")
+        !url.contains(FTP_CHECK)
     }
 
     // Create a new instance given data. The VfsDriver will take ownership of the data
@@ -176,14 +187,24 @@ impl VfsDriver for ZipFs {
             return Ok(LoadStatus::Directory);
         }
 
+        // The zip loader doesn't support \ for internal paths so replace with /
+        let path: Cow<str> = if !path.contains('\\') {
+            path.into()
+        } else {
+            path.replace('\\', "/").into()
+        };
+
         let read_file = match &mut self.data {
-            ZipInternal::FileReader(a) => a.by_name(path),
-            ZipInternal::MemReader(a) => a.by_name(path),
+            ZipInternal::FileReader(a) => a.by_name(&path),
+            ZipInternal::MemReader(a) => a.by_name(&path),
             ZipInternal::None => return Ok(LoadStatus::NotFound),
         };
 
         let mut file = match read_file {
-            Err(_) => return Ok(LoadStatus::NotFound),
+            Err(_) => {
+                trace!("file not found: {}", path);
+                return Ok(LoadStatus::NotFound);
+            }
             Ok(f) => f,
         };
 

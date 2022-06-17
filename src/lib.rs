@@ -79,7 +79,7 @@ pub(crate) trait VfsDriver: std::fmt::Debug {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
     /// If a driver id should be included for the node (should be true for anything but local) 
-    fn should_assign_driver_id(&self) -> bool { true }
+    fn name(&self) -> &'static str;
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool;
     // Create a new instance given data. The VfsDriver will take ownership of the data
@@ -484,22 +484,21 @@ impl<'a> Loader<'a> {
 
                 // Check if we can from this url
                 if !d.can_load_from_url(&current_path) {
+                    trace!("Driver {} can't load from path: {}", d.name(), current_path);
                     continue;
                 }
 
                 if let Some(new_driver) = d.create_from_url(&current_path) {
+                    let driver_name = new_driver.name();
                     // If we found a driver we mount it inside the vfs
                     self.driver_index = vfs.node_drivers.len() as _;
                     vfs.node_drivers.push(new_driver);
 
-                    trace!("Creating new driver at {} - comp index {}", current_path, self.component_index);
-                    //vfs.nodes[self.node_index].driver_index = self.driver_index as _;
+                    trace!("Creating new driver: {} at {} - comp index {}", driver_name, current_path, self.component_index);
 
                     let res = add_path_to_vfs(vfs, self.node_index, &p);
                     self.node_index = res.0;
                     self.component_index += res.1;
-
-                    trace!("Assigning new driver at {} {}", res.0, self.component_index);
 
                     vfs.nodes[self.node_index].driver_index = self.driver_index as _;
 
@@ -557,7 +556,7 @@ impl<'a> Loader<'a> {
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
 
-        trace!("Loading from driver {} : {}", &current_path, self.driver_index);
+        trace!("Loading from driver {} : {} - type {}", &current_path, self.driver_index, vfs.node_drivers[self.driver_index as usize].name());
 
         // walk backwards from the current path and try to load the data
         loop {
