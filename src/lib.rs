@@ -92,7 +92,7 @@ pub enum VfsError {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Progress<'a> {
+pub struct Progress<'a> {
     range: (f32, f32),
     step: f32,
     current: f32,
@@ -100,7 +100,7 @@ pub(crate) struct Progress<'a> {
 }
 
 /// File system implementations must implement this trait
-pub(crate) trait VfsDriver: std::fmt::Debug {
+pub trait VfsDriver: std::fmt::Debug {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
     /// If a driver id should be included for the node (should be true for anything but local) 
@@ -166,19 +166,14 @@ impl<'a> Progress<'a> {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Default)]
 pub enum NodeType {
+    #[default]
     Unknown,
     File,
     Directory,
     Archive,
     Other(usize),
-}
-
-impl Default for NodeType {
-    fn default() -> Self {
-        NodeType::Unknown
-    }
 }
 
 // TODO: Move bunch of data out to arrays to reduce reallocs
@@ -445,7 +440,7 @@ impl<'a> Loader<'a> {
     }
 
     // Search the vfs if we already have the path or parts of it to figure out how it should be loaded
-    fn find_node(&mut self, vfs: &mut VfsState) {
+    fn find_node(&mut self, vfs: &VfsState) {
         let components = &self.path_components[self.component_index..];
         let mut has_local_parent_driver = false;
         let mut found_driver = false;
@@ -459,11 +454,7 @@ impl<'a> Loader<'a> {
             if let Some(entry) = find_entry_in_node(node, &vfs.nodes, &component_name) {
                 let driver_index = vfs.nodes[entry].driver_index;
                 if driver_index != -1 {
-                    if vfs.node_drivers[driver_index as usize].is_remote() {
-                        has_local_parent_driver = false;
-                    } else {
-                        has_local_parent_driver = true;
-                    }
+                    has_local_parent_driver = !vfs.node_drivers[driver_index as usize].is_remote();
                     found_driver = true;
                 }
 
@@ -720,7 +711,7 @@ impl<'a> Loader<'a> {
     // Traverses the children of a node, gets all the names and sents it back to the host
     fn send_directory_for_node(
         &mut self,
-        vfs: &mut VfsState,
+        vfs: &VfsState,
         node_index: usize,
     ) -> Result<(), InternalError> {
         let source_node = &vfs.nodes[node_index];
@@ -831,20 +822,27 @@ fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg) {
 
 impl Vfs {
     //pub fn new(vfs_drivers: Option<&[Box<dyn VfsDriver>]>) -> Vfs {
-    pub fn new() -> Vfs {
+    pub fn new(thread_count: usize) -> Vfs {
         let (main_send, thread_recv) = unbounded::<SendMsg>();
 
-        // Setup worker thread
-        thread::Builder::new()
-            .name("vfs_worker".to_string())
-            .spawn(move || {
-                let mut state = VfsState::new();
+        let thread_count = usize::max(1, thread_count);
 
-                while let Ok(msg) = thread_recv.recv() {
-                    handle_msg(&mut state, "vfs_worker", &msg);
-                }
-            })
-            .unwrap();
+        for i in 0..thread_count {
+            let thread_recv = thread_recv.clone();
+            let name = format!("vfs_worker_{}", i);
+
+            thread::Builder::new()
+                .name(name.to_owned())
+                .spawn(move || {
+                    let mut state = VfsState::new();
+
+                    while let Ok(msg) = thread_recv.recv() {
+                        handle_msg(&mut state, &name, &msg);
+                    }
+                })
+                .unwrap();
+        }
+
 
         Vfs { main_send }
     }
@@ -852,7 +850,7 @@ impl Vfs {
 
 impl Default for Vfs {
     fn default() -> Self {
-        Self::new()
+        Self::new(2)
     }
 }
 
@@ -865,7 +863,7 @@ mod tests {
         let mut path = std::fs::canonicalize("data/a.zip").unwrap();
         path = path.join("beat.zip/foo/6beat.mod");
 
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
 
         for _ in 0..100 {
@@ -883,7 +881,7 @@ mod tests {
     fn vfs_local_directory() {
         let path = std::fs::canonicalize("data").unwrap();
 
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
         let mut found_first = false;
 
@@ -925,7 +923,7 @@ mod tests {
     fn vfs_local_dir_zip_file() {
         let path = std::fs::canonicalize("data").unwrap();
 
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
         let mut found_first = false;
 
@@ -963,7 +961,7 @@ mod tests {
 
     #[test]
     fn vfs_two_local_files() {
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
 
         let path = std::fs::canonicalize(".").unwrap();
         let path = path.join("Cargo.toml");
@@ -1001,7 +999,7 @@ mod tests {
 
     #[test]
     fn vfs_read_same_file_twice() {
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
 
         let path = std::fs::canonicalize(".").unwrap();
         let path = path.join("Cargo.toml");
@@ -1036,7 +1034,7 @@ mod tests {
     fn vfs_zip_dir() {
         let path = std::fs::canonicalize("data/a.zip").unwrap();
 
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
 
         for _ in 0..100 {
@@ -1056,7 +1054,7 @@ mod tests {
 
     #[test]
     fn ftp_test_file() {
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url("ftp://ftp.modland.com/readme_welcome.txt");
 
         for _ in 0..100 {
@@ -1074,7 +1072,7 @@ mod tests {
 
     #[test]
     fn ftp_test_large_file() {
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url("ftp://ftp.modland.com/allmods.zip");
 
         for _ in 0..1000 {
@@ -1096,7 +1094,7 @@ mod tests {
 
     #[test]
     fn ftp_test_directory_1() {
-        let vfs = Vfs::new();
+        let vfs = Vfs::new(1);
         let handle = vfs.load_url("ftp://ftp.modland.com");
 
         for _ in 0..100 {
