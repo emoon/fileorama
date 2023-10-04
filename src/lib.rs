@@ -6,16 +6,16 @@ use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::thread::{self};
 
+mod ftp_fs;
 mod local_fs;
 mod zip_fs;
-mod ftp_fs;
 
 #[cfg(test)]
 use std::println as trace;
 
 // Used for keeping data a alive for a while. This is useful as some data may have been loaded and then it's
 // common that another system wants to read the same data. We keep it alive for this amount of entries at the same time
-const MAX_CACHE_COUNT:usize = 5;
+const MAX_CACHE_COUNT: usize = 5;
 
 #[derive(Default, Debug)]
 pub struct FilesDirs {
@@ -46,7 +46,7 @@ impl Data {
     }
 
     pub fn get(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.size)}
+        unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
     }
 }
 
@@ -103,7 +103,7 @@ pub struct Progress<'a> {
 pub trait VfsDriver: std::fmt::Debug {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
-    /// If a driver id should be included for the node (should be true for anything but local) 
+    /// If a driver id should be included for the node (should be true for anything but local)
     fn name(&self) -> &'static str;
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool;
@@ -230,7 +230,7 @@ struct VfsState {
     nodes: Vec<Node>,
     node_drivers: Vec<VfsDriverType>,
     drivers: Vec<VfsDriverType>,
-    cached_data: Vec<CachedDataEntry>, 
+    cached_data: Vec<CachedDataEntry>,
 }
 
 impl VfsState {
@@ -328,11 +328,7 @@ fn add_new_node(state: &mut VfsState, index: usize, new_node: Node) -> usize {
     new_index
 }
 
-fn add_path_to_vfs(
-    vfs: &mut VfsState,
-    index: usize,
-    path: &Path,
-) -> (usize, usize) {
+fn add_path_to_vfs(vfs: &mut VfsState, index: usize, path: &Path) -> (usize, usize) {
     let mut count = 0;
     let mut prefix = false;
     let mut current_index = index;
@@ -353,7 +349,12 @@ fn add_path_to_vfs(
     (current_index, count)
 }
 
-fn add_files_dirs_to_vfs(vfs: &mut VfsState, components: &[Component], in_index: usize, files_dirs: FilesDirs) -> usize {
+fn add_files_dirs_to_vfs(
+    vfs: &mut VfsState,
+    components: &[Component],
+    in_index: usize,
+    files_dirs: FilesDirs,
+) -> usize {
     let mut index = in_index;
     let mut had_prefix = false;
     let mut search_nodes = true;
@@ -463,7 +464,10 @@ impl<'a> Loader<'a> {
                 self.component_index += 1;
                 // If we don't have any driver yet and we didn't find a path we must search for a driver
             } else if self.component_index == 0 {
-                trace!("Switching FindNode -> FindDriverUrl: {:?}", &components[self.component_index..]);
+                trace!(
+                    "Switching FindNode -> FindDriverUrl: {:?}",
+                    &components[self.component_index..]
+                );
                 self.state = LoadState::FindDriverUrl;
                 return;
             } else {
@@ -473,8 +477,12 @@ impl<'a> Loader<'a> {
                     self.component_index = 0;
                     self.node_index = 0;
                     self.state = LoadState::FindDriverUrl;
-                } else { 
-                    trace!("Switching FindNode -> LoadFromNode: {} : {}", component_name, self.component_index);
+                } else {
+                    trace!(
+                        "Switching FindNode -> LoadFromNode: {} : {}",
+                        component_name,
+                        self.component_index
+                    );
                     self.state = LoadState::LoadFromNode;
                 }
                 return;
@@ -492,7 +500,6 @@ impl<'a> Loader<'a> {
             // If we searched the whole tree and found the at last entry we try to load from it
             self.state = LoadState::LoadFromNode;
         }
-
     }
 
     // Walk the url backwards to find a driver
@@ -519,7 +526,12 @@ impl<'a> Loader<'a> {
                     self.driver_index = vfs.node_drivers.len() as _;
                     vfs.node_drivers.push(new_driver);
 
-                    trace!("Creating new driver: {} at {} - comp index {}", driver_name, current_path, self.component_index);
+                    trace!(
+                        "Creating new driver: {} at {} - comp index {}",
+                        driver_name,
+                        current_path,
+                        self.component_index
+                    );
 
                     let res = add_path_to_vfs(vfs, self.node_index, &p);
                     self.node_index = res.0;
@@ -580,7 +592,12 @@ impl<'a> Loader<'a> {
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
 
-        trace!("Loading from driver {} : {} - type {}", &current_path, self.driver_index, vfs.node_drivers[self.driver_index as usize].name());
+        trace!(
+            "Loading from driver {} : {} - type {}",
+            &current_path,
+            self.driver_index,
+            vfs.node_drivers[self.driver_index as usize].name()
+        );
 
         // walk backwards from the current path and try to load the data
         loop {
@@ -591,7 +608,14 @@ impl<'a> Loader<'a> {
 
             match load_msg {
                 LoadStatus::Directory => {
-                    return self.add_dir_to_vfs(vfs, self.component_index, &current_path, &mut progress, driver, self.node_index);
+                    return self.add_dir_to_vfs(
+                        vfs,
+                        self.component_index,
+                        &current_path,
+                        &mut progress,
+                        driver,
+                        self.node_index,
+                    );
                 }
 
                 LoadStatus::Data(in_data) => {
@@ -638,8 +662,13 @@ impl<'a> Loader<'a> {
 
         // if we have travered to the end of the path and we know that it's a directory we don't need to ask the driver
         // to load any data and we can just return it back directly here.
-        if self.component_index == self.path_components.len() && vfs.nodes[node_index].node_type == NodeType::Directory {
-            trace!("Sending cached directory for node {}", vfs.nodes[node_index].name);
+        if self.component_index == self.path_components.len()
+            && vfs.nodes[node_index].node_type == NodeType::Directory
+        {
+            trace!(
+                "Sending cached directory for node {}",
+                vfs.nodes[node_index].name
+            );
             self.send_directory_for_node(vfs, node_index)?;
             self.state = LoadState::Done;
             return Ok(());
@@ -658,7 +687,11 @@ impl<'a> Loader<'a> {
                 let p: PathBuf = components.iter().collect();
                 let current_path: String = p.to_string_lossy().into();
 
-                trace!("loading from driver {} path {}", driver_index, &current_path);
+                trace!(
+                    "loading from driver {} path {}",
+                    driver_index,
+                    &current_path
+                );
 
                 // construct the path to load from the driver
                 let mut progress = Progress::new(0.0, 1.0, self.msg);
@@ -667,7 +700,14 @@ impl<'a> Loader<'a> {
 
                 match load_msg {
                     LoadStatus::Directory => {
-                        return self.add_dir_to_vfs(vfs, i, &current_path, &mut progress, driver_index as usize, self.node_index);
+                        return self.add_dir_to_vfs(
+                            vfs,
+                            i,
+                            &current_path,
+                            &mut progress,
+                            driver_index as usize,
+                            self.node_index,
+                        );
                     }
                     LoadStatus::Data(in_data) => self.send_data(vfs, in_data)?,
                     LoadStatus::NotFound => self.msg.send(RecvMsg::NotFound)?,
@@ -686,12 +726,24 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
-    fn add_dir_to_vfs(&mut self, vfs: &mut VfsState, comp_index: usize,
-        current_path: &str, progress: &mut Progress, driver: usize, index: usize) -> Result<(), InternalError> {
+    fn add_dir_to_vfs(
+        &mut self,
+        vfs: &mut VfsState,
+        comp_index: usize,
+        current_path: &str,
+        progress: &mut Progress,
+        driver: usize,
+        index: usize,
+    ) -> Result<(), InternalError> {
         let mut node_index = index;
         let components = &self.path_components[comp_index..];
 
-        trace!("Found directory {} - {} - {:?}", vfs.nodes[index].name, current_path, components);
+        trace!(
+            "Found directory {} - {} - {:?}",
+            vfs.nodes[index].name,
+            current_path,
+            components
+        );
 
         if vfs.nodes[node_index].node_type != NodeType::Directory {
             // If the node type is unknown it means that we haven't fetched the dirs for
@@ -727,7 +779,8 @@ impl<'a> Loader<'a> {
             }
         }
 
-        self.msg.send(RecvMsg::Directory(FilesDirs::new(files, dirs)))?;
+        self.msg
+            .send(RecvMsg::Directory(FilesDirs::new(files, dirs)))?;
         Ok(())
     }
 
@@ -735,7 +788,7 @@ impl<'a> Loader<'a> {
         // check if the cache is full, in that case remove the last entry
         if vfs.cached_data.len() >= MAX_CACHE_COUNT {
             vfs.cached_data.remove(0);
-        } 
+        }
 
         let ret_data = Data::new(&data);
 
@@ -752,8 +805,6 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 }
-
-
 
 /*
 fn print_tree(state: &VfsState, index: u32, _parent: u32, indent: usize) {
@@ -772,7 +823,6 @@ fn print_tree(state: &VfsState, index: u32, _parent: u32, indent: usize) {
     }
 }
 */
-
 
 pub(crate) fn load(
     vfs: &mut VfsState,
@@ -843,7 +893,6 @@ impl Vfs {
                 .unwrap();
         }
 
-
         Vfs { main_send }
     }
 }
@@ -877,7 +926,7 @@ mod tests {
         panic!();
     }
 
-    #[test]    
+    #[test]
     fn vfs_local_directory() {
         let path = std::fs::canonicalize("data").unwrap();
 
@@ -919,7 +968,7 @@ mod tests {
         panic!();
     }
 
-    #[test]    
+    #[test]
     fn vfs_local_dir_zip_file() {
         let path = std::fs::canonicalize("data").unwrap();
 
@@ -1010,7 +1059,7 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
-                data_size = data.get().len(); 
+                data_size = data.get().len();
                 break;
             }
             thread::sleep(std::time::Duration::from_millis(1));
@@ -1020,7 +1069,7 @@ mod tests {
 
         for _ in 0..100 {
             if let Ok(RecvMsg::ReadDone(data)) = handle.recv.try_recv() {
-                data_size_2 = data.get().len(); 
+                data_size_2 = data.get().len();
                 break;
             }
 
@@ -1086,7 +1135,6 @@ mod tests {
                 }
                 _ => thread::sleep(std::time::Duration::from_millis(50)),
             }
-
         }
 
         panic!();
@@ -1112,5 +1160,4 @@ mod tests {
 
         panic!();
     }
-
 }

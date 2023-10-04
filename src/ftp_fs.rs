@@ -1,4 +1,4 @@
-use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
+use crate::{FilesDirs, InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
 use ftp::{FtpError, FtpStream};
 use log::error;
 use std::path::MAIN_SEPARATOR;
@@ -8,10 +8,10 @@ use std::path::MAIN_SEPARATOR;
 
 // This is kinda ugly, but better than testing non-supported paths on a remote server
 #[cfg(target_os = "windows")]
-pub const FTP_URL:&str = "ftp:\\";
+pub const FTP_URL: &str = "ftp:\\";
 
 #[cfg(not(target_os = "windows"))]
-pub const FTP_URL:&str = "ftp:/";
+pub const FTP_URL: &str = "ftp:/";
 
 #[derive(Debug)]
 pub struct FtpFs {
@@ -35,7 +35,6 @@ impl FtpFs {
             if let Some(offset) = url.find(MAIN_SEPARATOR) {
                 return Some(&url[..offset]);
             }
-
         } else {
             if !url.contains(MAIN_SEPARATOR) {
                 return Some(url);
@@ -44,7 +43,7 @@ impl FtpFs {
             if let Some(offset) = url.find(MAIN_SEPARATOR) {
                 return Some(&url[..offset]);
             }
-        } 
+        }
 
         None
     }
@@ -62,7 +61,7 @@ impl VfsDriver for FtpFs {
 
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool {
-        // Only supports urls that starts with ftp 
+        // Only supports urls that starts with ftp
         url.starts_with(FTP_URL) || url.starts_with("ftp.")
     }
 
@@ -83,7 +82,7 @@ impl VfsDriver for FtpFs {
 
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
-        // Only supports urls that starts with ftp 
+        // Only supports urls that starts with ftp
         if !url.starts_with(FTP_URL) && !url.starts_with("ftp.") {
             return false;
         }
@@ -116,7 +115,7 @@ impl VfsDriver for FtpFs {
             stream.login("anonymous", "anonymous").unwrap();
             stream.transfer_type(ftp::types::FileType::Binary).unwrap();
 
-            return Some(Box::new(FtpFs { data: Some(stream) }))
+            return Some(Box::new(FtpFs { data: Some(stream) }));
         }
 
         None
@@ -130,12 +129,12 @@ impl VfsDriver for FtpFs {
     ) -> Result<LoadStatus, InternalError> {
         let conn = self.data.as_mut().unwrap();
 
-        // We get a listing of the files first here because if we try to do 'SIZE' on a directory 
-        // this command will hang, if this is a fault of the FTP server or ftp-rs I don't know, but this is a workaround at least 
+        // We get a listing of the files first here because if we try to do 'SIZE' on a directory
+        // this command will hang, if this is a fault of the FTP server or ftp-rs I don't know, but this is a workaround at least
         let dirs_and_files = conn.list(Some(path))?;
 
         // To validate that we are only checking one file we expect the listing command to return one entry
-        // with the first file flag not being set to 'd' 
+        // with the first file flag not being set to 'd'
         if dirs_and_files.len() == 1 && !dirs_and_files[0].starts_with('d') {
             // split up the size so we can access the size
             let t = dirs_and_files[0].split_whitespace().collect::<Vec<&str>>();
@@ -152,16 +151,17 @@ impl VfsDriver for FtpFs {
                 for i in 0..loop_count + 1 {
                     let block_offset = i * block_len;
                     let read_amount = usize::min(file_size - block_offset, block_len);
-                    reader.read_exact(&mut output_data[block_offset..block_offset + read_amount]).map_err(FtpError::ConnectionError)?;
-                    pro.step().map_err(|op| FtpError::InvalidResponse(op.to_string()))?;
+                    reader
+                        .read_exact(&mut output_data[block_offset..block_offset + read_amount])
+                        .map_err(FtpError::ConnectionError)?;
+                    pro.step()
+                        .map_err(|op| FtpError::InvalidResponse(op.to_string()))?;
                 }
 
                 Ok(output_data)
+            })?;
 
-                })?;
-
-                Ok(LoadStatus::Data(output_data.into_boxed_slice()))
-
+            Ok(LoadStatus::Data(output_data.into_boxed_slice()))
         } else {
             // if we didn't get any size here we assume it's a directory.
             Ok(LoadStatus::Directory)
@@ -190,13 +190,13 @@ impl VfsDriver for FtpFs {
             // drwxrwxr-x    7 1001       1001             4096 Jan 20  2018 incoming
             let t = dir_file.split_whitespace().collect::<Vec<&str>>();
 
-            // if flags starts with 'd' we assume it's a directory 
+            // if flags starts with 'd' we assume it's a directory
             if t[0].starts_with('d') {
                 dirs.push(t[8].to_owned());
             } else {
                 files.push(t[8].to_owned());
             }
-        } 
+        }
 
         files.sort();
         dirs.sort();

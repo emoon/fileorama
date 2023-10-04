@@ -1,12 +1,12 @@
-use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
+use crate::{FilesDirs, InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
 #[cfg(not(test))]
-use log::{trace};
+use log::trace;
 
 #[cfg(test)]
-use std::{println as trace};
+use std::println as trace;
 
 #[derive(Debug)]
 pub struct LocalFs {
@@ -124,7 +124,11 @@ impl VfsDriver for LocalFs {
         trace!("Getting directory listing for {:?}", &self.root.join(path));
 
         // skip 1 skips the inital directory as it's included otherwise
-        for e in WalkDir::new(self.root.join(path)).max_depth(1).into_iter().skip(1) {
+        for e in WalkDir::new(self.root.join(path))
+            .max_depth(1)
+            .into_iter()
+            .skip(1)
+        {
             let file = e?;
             let metadata = file.metadata()?;
 

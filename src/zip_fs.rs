@@ -1,16 +1,16 @@
-use crate::{InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType, FilesDirs};
+use crate::{FilesDirs, InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
-use std::borrow::Cow;
 
 // This is kinda ugly, but better than testing non-supported paths on a remote server
 #[cfg(target_os = "windows")]
-pub const FTP_CHECK:&str = "ftp:\\";
+pub const FTP_CHECK: &str = "ftp:\\";
 
 #[cfg(not(target_os = "windows"))]
-pub const FTP_CHECK:&str = "ftp:/";
+pub const FTP_CHECK: &str = "ftp:/";
 
 #[cfg(not(test))]
 use log::{error, trace};
@@ -97,7 +97,7 @@ impl ZipFs {
 }
 
 impl VfsDriver for ZipFs {
-    /// We return true here as we don't know 
+    /// We return true here as we don't know
     fn is_remote(&self) -> bool {
         true
     }
@@ -132,7 +132,9 @@ impl VfsDriver for ZipFs {
             }
         };
 
-        Some(Box::new(ZipFs { data: ZipInternal::MemReader(a) }))
+        Some(Box::new(ZipFs {
+            data: ZipInternal::MemReader(a),
+        }))
     }
 
     // Get some data in and returns true if driver can be mounted from it
