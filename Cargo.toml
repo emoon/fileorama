@@ -8,8 +8,13 @@ categories = ["Filesystem"]
 repository = "https://github.com/emoon/fileorama"
 documentation = "https://docs.rs/fileorama/0.01/fileorama"
 readme = "README.md"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
+
+exclude = ["data/"]
+
+[badges]
+maintained = { status = "actively-developed" }
 
 [dependencies]
 crossbeam-channel = "0.5"
