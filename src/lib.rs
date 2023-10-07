@@ -42,6 +42,7 @@ pub struct Data {
 }
 
 impl Data {
+    #[must_use]
     pub fn new(data: &[u8]) -> Data {
         Data {
             ptr: data.as_ptr(),
@@ -283,10 +284,10 @@ pub enum SendMsg {
     AddVfsDriver(VfsDriverType),
 }
 
-fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
-    if let InternalError::FileError(e) = e {
-        let file_error = format!("{:#?}", e);
-        if let Err(send_err) = msg.send(RecvMsg::Error(e.into())) {
+fn handle_error(err: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
+    if let InternalError::FileError(err) = err {
+        let file_error = format!("{err:#?}");
+        if let Err(send_err) = msg.send(RecvMsg::Error(err.into())) {
             error!(
                 "evfs: Unable to send file error {:#?} to main thread due to {:#?}",
                 file_error, send_err
@@ -785,9 +786,9 @@ impl<'a> Loader<'a> {
         for i in &source_node.nodes {
             let node = &vfs.nodes[*i as usize];
             if node.node_type == NodeType::File {
-                files.push(node.name.to_owned())
+                files.push(node.name.to_owned());
             } else {
-                dirs.push(node.name.to_owned())
+                dirs.push(node.name.to_owned());
             }
         }
 
