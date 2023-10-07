@@ -2,9 +2,13 @@ use crossbeam_channel::unbounded;
 use log::*;
 use thiserror::Error;
 
-use std::borrow::Cow;
-use std::path::{Component, Path, PathBuf};
-use std::thread::{self};
+use std::{
+    borrow::Cow,
+    path::{Component, Path, PathBuf},
+    thread::{self},
+    sync::{RwLock, Arc},
+};
+
 
 mod ftp_fs;
 mod local_fs;
@@ -100,7 +104,7 @@ pub struct Progress<'a> {
 }
 
 /// File system implementations must implement this trait
-pub trait VfsDriver: std::fmt::Debug {
+pub trait VfsDriver: std::fmt::Debug + Send + Sync {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
     /// If a driver id should be included for the node (should be true for anything but local)
@@ -142,6 +146,7 @@ pub enum VfsType {
     //
     Streaming,
 }
+
 
 impl<'a> Progress<'a> {
     pub fn step(&mut self) -> Result<(), InternalError> {
@@ -219,6 +224,7 @@ impl Node {
 }
 
 type VfsDriverType = Box<dyn VfsDriver>;
+type VfsDrivers = Arc<RwLock<Vec<VfsDriverType>>>;
 
 struct CachedDataEntry {
     path: String,
@@ -229,20 +235,12 @@ struct CachedDataEntry {
 struct VfsState {
     nodes: Vec<Node>,
     node_drivers: Vec<VfsDriverType>,
-    drivers: Vec<VfsDriverType>,
     cached_data: Vec<CachedDataEntry>,
 }
 
 impl VfsState {
     fn new() -> VfsState {
-        let drivers: Vec<VfsDriverType> = vec![
-            Box::new(ftp_fs::FtpFs::new()),
-            Box::new(zip_fs::ZipFs::new()),
-            Box::new(local_fs::LocalFs::new()),
-        ];
-
         VfsState {
-            drivers,
             nodes: vec![Node::new_directory_node("root".into(), 0)],
             cached_data: Vec::with_capacity(MAX_CACHE_COUNT),
             ..Default::default()
@@ -273,6 +271,7 @@ impl Vfs {
 
 pub enum SendMsg {
     LoadUrl(String, u32, crossbeam_channel::Sender<RecvMsg>),
+    AddVfsDriver(VfsDriverType),
 }
 
 fn handle_error(e: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
@@ -503,13 +502,13 @@ impl<'a> Loader<'a> {
     }
 
     // Walk the url backwards to find a driver
-    fn find_driver_url(&mut self, vfs: &mut VfsState) {
+    fn find_driver_url(&mut self, vfs: &mut VfsState, drivers: &VfsDrivers) {
         let components = &self.path_components[self.component_index..];
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
 
         while !current_path.is_empty() {
-            for d in &vfs.drivers {
+            for d in &*drivers.read().unwrap() {
                 if !d.supports_url(&current_path) {
                     continue;
                 }
@@ -554,10 +553,10 @@ impl<'a> Loader<'a> {
     }
 
     // Find a driver given input data at a node. If a driver is found we switch to state LoadFromDriver
-    fn find_driver_data(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
+    fn find_driver_data(&mut self, vfs: &mut VfsState, drivers: &VfsDrivers) -> Result<(), InternalError> {
         let node_data = self.data.as_ref().unwrap();
 
-        for d in &vfs.drivers {
+        for d in &*drivers.read().unwrap() {
             if !d.can_load_from_data(node_data) {
                 continue;
             }
@@ -828,6 +827,7 @@ pub(crate) fn load(
     vfs: &mut VfsState,
     path: &str,
     msg: &crossbeam_channel::Sender<RecvMsg>,
+    drivers: &VfsDrivers,
 ) -> Result<(), InternalError> {
     let mut loader = Loader::new(path, msg);
 
@@ -848,8 +848,8 @@ pub(crate) fn load(
 
         match loader.state {
             LoadState::FindNode => loader.find_node(vfs),
-            LoadState::FindDriverUrl => loader.find_driver_url(vfs),
-            LoadState::FindDriverData => loader.find_driver_data(vfs)?,
+            LoadState::FindDriverUrl => loader.find_driver_url(vfs, drivers),
+            LoadState::FindDriverData => loader.find_driver_data(vfs, drivers)?,
             LoadState::LoadFromDriver => loader.load_from_driver(vfs)?,
             LoadState::LoadFromNode => loader.load_from_node(vfs)?,
             LoadState::Done => break,
@@ -860,12 +860,16 @@ pub(crate) fn load(
     Ok(())
 }
 
-fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg) {
+fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg, drivers: &VfsDrivers) {
     match msg {
         SendMsg::LoadUrl(path, _node_index, msg) => {
-            if let Err(e) = load(vfs, path, msg) {
+            if let Err(e) = load(vfs, path, msg, drivers) {
                 handle_error(e, msg);
             }
+        }
+        SendMsg::AddVfsDriver(driver) => {
+            let mut drivers = drivers.write().unwrap();
+            drivers.push(driver.create_instance());
         }
     }
 }
@@ -875,11 +879,18 @@ impl Vfs {
     pub fn new(thread_count: usize) -> Vfs {
         let (main_send, thread_recv) = unbounded::<SendMsg>();
 
+        let vfs_drivers: VfsDrivers = Arc::new(RwLock::new(vec![
+            Box::new(ftp_fs::FtpFs::new()),
+            Box::new(zip_fs::ZipFs::new()),
+            Box::new(local_fs::LocalFs::new()),
+        ]));
+
         let thread_count = usize::max(1, thread_count);
 
         for i in 0..thread_count {
             let thread_recv = thread_recv.clone();
             let name = format!("vfs_worker_{}", i);
+            let drivers = Arc::clone(&vfs_drivers);
 
             thread::Builder::new()
                 .name(name.to_owned())
@@ -887,7 +898,7 @@ impl Vfs {
                     let mut state = VfsState::new();
 
                     while let Ok(msg) = thread_recv.recv() {
-                        handle_msg(&mut state, &name, &msg);
+                        handle_msg(&mut state, &name, &msg, &drivers);
                     }
                 })
                 .unwrap();
