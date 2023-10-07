@@ -259,12 +259,12 @@ impl VfsState {
 }
 
 #[derive(Clone, Debug)]
-pub struct Vfs {
+pub struct Fileorama {
     /// for sending messages to the main-thread
     main_send: crossbeam_channel::Sender<SendMsg>,
 }
 
-impl Vfs {
+impl Fileorama {
     /// Loads the first file given a url. If an known archive is encounterd the first file will be extracted
     /// (given if it has a file listing) and that will be returned until a file is encountered. If there are
     /// no files an error will/archive will be returned instead and the user code has to handle it
@@ -276,6 +276,43 @@ impl Vfs {
             .unwrap();
 
         Handle { recv: main_recv }
+    }
+
+    pub fn new(thread_count: usize) -> Self {
+        let (main_send, thread_recv) = unbounded::<SendMsg>();
+
+        let vfs_drivers: VfsDrivers = Arc::new(RwLock::new(vec![
+            Box::new(ftp_fs::FtpFs::new()),
+            Box::new(zip_fs::ZipFs::new()),
+            Box::new(local_fs::LocalFs::new()),
+        ]));
+
+        let thread_count = usize::max(1, thread_count);
+
+        for i in 0..thread_count {
+            let thread_recv = thread_recv.clone();
+            let name = format!("vfs_worker_{}", i);
+            let drivers = Arc::clone(&vfs_drivers);
+
+            thread::Builder::new()
+                .name(name.to_owned())
+                .spawn(move || {
+                    let mut state = VfsState::new();
+
+                    while let Ok(msg) = thread_recv.recv() {
+                        handle_msg(&mut state, &name, &msg, &drivers);
+                    }
+                })
+                .unwrap();
+        }
+
+        Self { main_send }
+    }
+}
+
+impl Default for Fileorama {
+    fn default() -> Self {
+        Self::new(2)
     }
 }
 
@@ -881,52 +918,15 @@ fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg, drivers: &VfsDrive
                 handle_error(e, msg);
             }
         }
+        // Add a new driver. These drivers are pushed at the front of the list which
+        // means that they will be tried first when looking for new drivers
         SendMsg::AddVfsDriver(driver) => {
             let mut drivers = drivers.write().unwrap();
-            drivers.push(driver.create_instance());
+            drivers.insert(0, driver.create_instance());
         }
     }
 }
 
-impl Vfs {
-    //pub fn new(vfs_drivers: Option<&[Box<dyn VfsDriver>]>) -> Vfs {
-    pub fn new(thread_count: usize) -> Vfs {
-        let (main_send, thread_recv) = unbounded::<SendMsg>();
-
-        let vfs_drivers: VfsDrivers = Arc::new(RwLock::new(vec![
-            Box::new(ftp_fs::FtpFs::new()),
-            Box::new(zip_fs::ZipFs::new()),
-            Box::new(local_fs::LocalFs::new()),
-        ]));
-
-        let thread_count = usize::max(1, thread_count);
-
-        for i in 0..thread_count {
-            let thread_recv = thread_recv.clone();
-            let name = format!("vfs_worker_{}", i);
-            let drivers = Arc::clone(&vfs_drivers);
-
-            thread::Builder::new()
-                .name(name.to_owned())
-                .spawn(move || {
-                    let mut state = VfsState::new();
-
-                    while let Ok(msg) = thread_recv.recv() {
-                        handle_msg(&mut state, &name, &msg, &drivers);
-                    }
-                })
-                .unwrap();
-        }
-
-        Vfs { main_send }
-    }
-}
-
-impl Default for Vfs {
-    fn default() -> Self {
-        Self::new(2)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -937,7 +937,7 @@ mod tests {
         let mut path = std::fs::canonicalize("data/a.zip").unwrap();
         path = path.join("beat.zip/foo/6beat.mod");
 
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
 
         for _ in 0..100 {
@@ -955,7 +955,7 @@ mod tests {
     fn vfs_local_directory() {
         let path = std::fs::canonicalize("data").unwrap();
 
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
         let mut found_first = false;
 
@@ -997,7 +997,7 @@ mod tests {
     fn vfs_local_dir_zip_file() {
         let path = std::fs::canonicalize("data").unwrap();
 
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
         let mut found_first = false;
 
@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn vfs_two_local_files() {
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
 
         let path = std::fs::canonicalize(".").unwrap();
         let path = path.join("Cargo.toml");
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn vfs_read_same_file_twice() {
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
 
         let path = std::fs::canonicalize(".").unwrap();
         let path = path.join("Cargo.toml");
@@ -1108,7 +1108,7 @@ mod tests {
     fn vfs_zip_dir() {
         let path = std::fs::canonicalize("data/a.zip").unwrap();
 
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url(&path.to_string_lossy());
 
         for _ in 0..100 {
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn ftp_test_file() {
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url("ftp://ftp.modland.com/readme_welcome.txt");
 
         for _ in 0..100 {
@@ -1146,7 +1146,7 @@ mod tests {
 
     #[test]
     fn ftp_test_large_file() {
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url("ftp://ftp.modland.com/allmods.zip");
 
         for _ in 0..1000 {
@@ -1167,7 +1167,7 @@ mod tests {
 
     #[test]
     fn ftp_test_directory_1() {
-        let vfs = Vfs::new(1);
+        let vfs = Fileorama::new(1);
         let handle = vfs.load_url("ftp://ftp.modland.com");
 
         for _ in 0..100 {
