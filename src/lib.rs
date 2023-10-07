@@ -36,6 +36,7 @@ impl FilesDirs {
 unsafe impl Sync for Data {}
 unsafe impl Send for Data {}
 
+/// This is used to pass cached data back to the main thread without having to copy it
 pub struct Data {
     pub ptr: *const u8,
     pub size: usize,
@@ -54,11 +55,21 @@ impl Data {
     }
 }
 
+/// Used for sending messages back to the main thread
 pub enum RecvMsg {
+    /// Progress of the current read operation. Notice that this may not be fully accurate
+    /// depending on the driver that is being used for the read operation and how many layers of
+    /// indirection there are.
     ReadProgress(f32),
+    /// Data after reading has finished.
     ReadDone(Data),
+    /// Data after the reading has been completed, but does also include metadata about the data.
+    ReadDoneMetadata(Data, Data),
+    /// Error that occured during reading
     Error(VfsError),
+    /// When reading from a url a directory listing is returned
     Directory(FilesDirs),
+    /// Nothing found at the given url
     NotFound,
 }
 
