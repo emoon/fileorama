@@ -5,10 +5,9 @@ use thiserror::Error;
 use std::{
     borrow::Cow,
     path::{Component, Path, PathBuf},
+    sync::{Arc, RwLock},
     thread::{self},
-    sync::{RwLock, Arc},
 };
-
 
 mod ftp_fs;
 mod local_fs;
@@ -157,7 +156,6 @@ pub enum VfsType {
     //
     Streaming,
 }
-
 
 impl<'a> Progress<'a> {
     pub fn step(&mut self) -> Result<(), InternalError> {
@@ -564,7 +562,11 @@ impl<'a> Loader<'a> {
     }
 
     // Find a driver given input data at a node. If a driver is found we switch to state LoadFromDriver
-    fn find_driver_data(&mut self, vfs: &mut VfsState, drivers: &VfsDrivers) -> Result<(), InternalError> {
+    fn find_driver_data(
+        &mut self,
+        vfs: &mut VfsState,
+        drivers: &VfsDrivers,
+    ) -> Result<(), InternalError> {
         let node_data = self.data.as_ref().unwrap();
 
         for d in &*drivers.read().unwrap() {
