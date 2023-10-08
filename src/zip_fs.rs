@@ -1,4 +1,4 @@
-use crate::{FilesDirs, FileoramaError, LoadStatus, Progress, Driver, DriverType};
+use crate::{FilesDirs, Error, LoadStatus, Progress, Driver, DriverType};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::File;
@@ -41,7 +41,7 @@ impl ZipFs {
         path: &str,
         progress: &mut Progress,
         filenames: &mut dyn Iterator<Item = &str>,
-    ) -> Result<FilesDirs, FileoramaError> {
+    ) -> Result<FilesDirs, Error> {
         let mut paths = HashSet::<String>::new();
         let mut files = Vec::with_capacity(256);
 
@@ -184,7 +184,7 @@ impl Driver for ZipFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, FileoramaError> {
+    ) -> Result<LoadStatus, Error> {
         if path.is_empty() {
             return Ok(LoadStatus::Directory);
         }
@@ -244,7 +244,7 @@ impl Driver for ZipFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, FileoramaError> {
+    ) -> Result<FilesDirs, Error> {
         match &self.data {
             ZipInternal::FileReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
             ZipInternal::MemReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),

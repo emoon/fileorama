@@ -1,4 +1,4 @@
-use crate::{FilesDirs, FileoramaError, LoadStatus, Progress, Driver, DriverType};
+use crate::{FilesDirs, Error, LoadStatus, Progress, Driver, DriverType};
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
@@ -67,7 +67,7 @@ impl Driver for LocalFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, FileoramaError> {
+    ) -> Result<LoadStatus, Error> {
         let path = if path.is_empty() {
             self.root.clone()
         } else {
@@ -116,7 +116,7 @@ impl Driver for LocalFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, FileoramaError> {
+    ) -> Result<FilesDirs, Error> {
         progress.set_step(1);
         let mut dirs = Vec::with_capacity(256);
         let mut files = Vec::with_capacity(256);

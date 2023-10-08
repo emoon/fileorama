@@ -1,4 +1,4 @@
-use crate::{FilesDirs, FileoramaError, LoadStatus, Progress, Driver, DriverType};
+use crate::{FilesDirs, Error, LoadStatus, Progress, Driver, DriverType};
 use ftp::{FtpError, FtpStream};
 use log::error;
 use std::path::MAIN_SEPARATOR;
@@ -123,7 +123,7 @@ impl Driver for FtpFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, FileoramaError> {
+    ) -> Result<LoadStatus, Error> {
         let conn = self.data.as_mut().unwrap();
 
         // We get a listing of the files first here because if we try to do 'SIZE' on a directory
@@ -169,7 +169,7 @@ impl Driver for FtpFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, FileoramaError> {
+    ) -> Result<FilesDirs, Error> {
         let conn = self.data.as_mut().unwrap();
 
         progress.set_step(2);

@@ -84,7 +84,7 @@ pub enum LoadStatus {
 }
 
 #[derive(Error, Debug)]
-pub enum FileoramaError {
+pub enum Error {
     #[error("File Error)")]
     FileDirNotFound,
     #[error("File Error)")]
@@ -123,7 +123,7 @@ pub trait Driver: std::fmt::Debug + Send + Sync {
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool;
     // Create a new instance given data. The Driver will take ownership of the data
-    fn create_instance(&self) -> Box<dyn Driver>;
+    fn create_instance(&self) -> DriverType;
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_data(&self, data: &[u8]) -> bool;
     // Create a new instance given data. The Driver will take ownership of the data
@@ -137,13 +137,13 @@ pub trait Driver: std::fmt::Debug + Send + Sync {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, FileoramaError>;
+    ) -> Result<LoadStatus, Error>;
     // get a file/directory listing for the driver
     fn get_directory_list(
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, FileoramaError>;
+    ) -> Result<FilesDirs, Error>;
 }
 
 #[derive(Clone)]
@@ -152,7 +152,7 @@ pub struct Handle {
 }
 
 impl<'a> Progress<'a> {
-    pub fn step(&mut self) -> Result<(), FileoramaError> {
+    pub fn step(&mut self) -> Result<(), Error> {
         self.current += self.step;
         let f = self.current.clamp(0.0, 1.0);
         let res = self.range.0 + f * (self.range.1 - self.range.0);
@@ -314,8 +314,8 @@ pub enum SendMsg {
     AddDriver(DriverType),
 }
 
-fn handle_error(err: FileoramaError, msg: &crossbeam_channel::Sender<RecvMsg>) {
-    if let FileoramaError::FileError(err) = err {
+fn handle_error(err: Error, msg: &crossbeam_channel::Sender<RecvMsg>) {
+    if let Error::FileError(err) = err {
         let file_error = format!("{err:#?}");
         if let Err(send_err) = msg.send(RecvMsg::Error(err.into())) {
             error!(
@@ -597,7 +597,7 @@ impl<'a> Loader<'a> {
         &mut self,
         vfs: &mut State,
         drivers: &Drivers,
-    ) -> Result<(), FileoramaError> {
+    ) -> Result<(), Error> {
         let node_data = self.data.as_ref().unwrap();
 
         for d in &*drivers.read().unwrap() {
@@ -629,7 +629,7 @@ impl<'a> Loader<'a> {
     }
 
     // Walk a path backwards and try to load the url given a driver
-    fn load_from_driver(&mut self, vfs: &mut State) -> Result<(), FileoramaError> {
+    fn load_from_driver(&mut self, vfs: &mut State) -> Result<(), Error> {
         let components = &self.path_components[self.component_index..];
 
         let mut p: PathBuf = components.iter().collect();
@@ -700,7 +700,7 @@ impl<'a> Loader<'a> {
     // the active node doesn't have one. This happens for example if we try to load from zip/file.bin
     // The current node would be "file.bin" but we need to load the data from the parent so the driver
     // will see the "file.bin" as input path
-    fn load_from_node(&mut self, vfs: &mut State) -> Result<(), FileoramaError> {
+    fn load_from_node(&mut self, vfs: &mut State) -> Result<(), Error> {
         let mut node_index = self.node_index;
 
         // if we have travered to the end of the path and we know that it's a directory we don't need to ask the driver
@@ -777,7 +777,7 @@ impl<'a> Loader<'a> {
         progress: &mut Progress,
         driver: usize,
         index: usize,
-    ) -> Result<(), FileoramaError> {
+    ) -> Result<(), Error> {
         let mut node_index = index;
         let components = &self.path_components[comp_index..];
 
@@ -808,7 +808,7 @@ impl<'a> Loader<'a> {
         &mut self,
         vfs: &State,
         node_index: usize,
-    ) -> Result<(), FileoramaError> {
+    ) -> Result<(), Error> {
         let source_node = &vfs.nodes[node_index];
         let mut files = Vec::with_capacity(source_node.nodes.len());
         let mut dirs = Vec::with_capacity(source_node.nodes.len());
@@ -827,7 +827,7 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
-    fn send_data(&mut self, vfs: &mut State, data: Box<[u8]>) -> Result<(), FileoramaError> {
+    fn send_data(&mut self, vfs: &mut State, data: Box<[u8]>) -> Result<(), Error> {
         // check if the cache is full, in that case remove the last entry
         if vfs.cached_data.len() >= MAX_CACHE_COUNT {
             vfs.cached_data.remove(0);
@@ -872,7 +872,7 @@ pub(crate) fn load(
     path: &str,
     msg: &crossbeam_channel::Sender<RecvMsg>,
     drivers: &Drivers,
-) -> Result<(), FileoramaError> {
+) -> Result<(), Error> {
     let mut loader = Loader::new(path, msg);
 
     // first we look in the cache if we have data there and then send that back
