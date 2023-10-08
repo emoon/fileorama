@@ -66,7 +66,7 @@ pub enum RecvMsg {
     /// Data after the reading has been completed, but does also include metadata about the data.
     ReadDoneMetadata(Data, Data),
     /// Error that occured during reading
-    Error(VfsError),
+    Error(SendError),
     /// When reading from a url a directory listing is returned
     Directory(FilesDirs),
     /// Nothing found at the given url
@@ -84,7 +84,7 @@ pub enum LoadStatus {
 }
 
 #[derive(Error, Debug)]
-pub enum InternalError {
+pub enum FileoramaError {
     #[error("File Error)")]
     FileDirNotFound,
     #[error("File Error)")]
@@ -100,7 +100,7 @@ pub enum InternalError {
 }
 
 #[derive(Error, Debug)]
-pub enum VfsError {
+pub enum SendError {
     /// Errors from std::io::Error
     #[error("File Error)")]
     FileError(#[from] std::io::Error),
@@ -115,35 +115,35 @@ pub struct Progress<'a> {
 }
 
 /// File system implementations must implement this trait
-pub trait VfsDriver: std::fmt::Debug + Send + Sync {
+pub trait Driver: std::fmt::Debug + Send + Sync {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool;
     /// If a driver id should be included for the node (should be true for anything but local)
     fn name(&self) -> &'static str;
     /// If the driver supports a certain url
     fn supports_url(&self, url: &str) -> bool;
-    // Create a new instance given data. The VfsDriver will take ownership of the data
-    fn create_instance(&self) -> Box<dyn VfsDriver>;
+    // Create a new instance given data. The Driver will take ownership of the data
+    fn create_instance(&self) -> Box<dyn Driver>;
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_data(&self, data: &[u8]) -> bool;
-    // Create a new instance given data. The VfsDriver will take ownership of the data
-    fn create_from_data(&self, data: Box<[u8]>) -> Option<VfsDriverType>;
+    // Create a new instance given data. The Driver will take ownership of the data
+    fn create_from_data(&self, data: Box<[u8]>) -> Option<DriverType>;
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool;
     /// Used when creating an instance of the driver with a path to load from
-    fn create_from_url(&self, url: &str) -> Option<VfsDriverType>;
+    fn create_from_url(&self, url: &str) -> Option<DriverType>;
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
     fn load_url(
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, InternalError>;
+    ) -> Result<LoadStatus, FileoramaError>;
     // get a file/directory listing for the driver
     fn get_directory_list(
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, InternalError>;
+    ) -> Result<FilesDirs, FileoramaError>;
 }
 
 #[derive(Clone)]
@@ -151,15 +151,8 @@ pub struct Handle {
     pub recv: crossbeam_channel::Receiver<RecvMsg>,
 }
 
-pub enum VfsType {
-    // Used for remote loading (such as ftp, http)
-    Remote,
-    //
-    Streaming,
-}
-
 impl<'a> Progress<'a> {
-    pub fn step(&mut self) -> Result<(), InternalError> {
+    pub fn step(&mut self) -> Result<(), FileoramaError> {
         self.current += self.step;
         let f = self.current.clamp(0.0, 1.0);
         let res = self.range.0 + f * (self.range.1 - self.range.0);
@@ -233,8 +226,8 @@ impl Node {
     }
 }
 
-type VfsDriverType = Box<dyn VfsDriver>;
-type VfsDrivers = Arc<RwLock<Vec<VfsDriverType>>>;
+type DriverType = Box<dyn Driver>;
+type Drivers = Arc<RwLock<Vec<DriverType>>>;
 
 struct CachedDataEntry {
     path: String,
@@ -242,15 +235,15 @@ struct CachedDataEntry {
 }
 
 #[derive(Default)]
-struct VfsState {
+struct State {
     nodes: Vec<Node>,
-    node_drivers: Vec<VfsDriverType>,
+    node_drivers: Vec<DriverType>,
     cached_data: Vec<CachedDataEntry>,
 }
 
-impl VfsState {
-    fn new() -> VfsState {
-        VfsState {
+impl State {
+    fn new() -> State {
+        State {
             nodes: vec![Node::new_directory_node("root".into(), 0)],
             cached_data: Vec::with_capacity(MAX_CACHE_COUNT),
             ..Default::default()
@@ -281,7 +274,7 @@ impl Fileorama {
     pub fn new(thread_count: usize) -> Self {
         let (main_send, thread_recv) = unbounded::<SendMsg>();
 
-        let vfs_drivers: VfsDrivers = Arc::new(RwLock::new(vec![
+        let vfs_drivers: Drivers = Arc::new(RwLock::new(vec![
             Box::new(ftp_fs::FtpFs::new()),
             Box::new(zip_fs::ZipFs::new()),
             Box::new(local_fs::LocalFs::new()),
@@ -297,7 +290,7 @@ impl Fileorama {
             thread::Builder::new()
                 .name(name.to_owned())
                 .spawn(move || {
-                    let mut state = VfsState::new();
+                    let mut state = State::new();
 
                     while let Ok(msg) = thread_recv.recv() {
                         handle_msg(&mut state, &name, &msg, &drivers);
@@ -318,11 +311,11 @@ impl Default for Fileorama {
 
 pub enum SendMsg {
     LoadUrl(String, u32, crossbeam_channel::Sender<RecvMsg>),
-    AddVfsDriver(VfsDriverType),
+    AddDriver(DriverType),
 }
 
-fn handle_error(err: InternalError, msg: &crossbeam_channel::Sender<RecvMsg>) {
-    if let InternalError::FileError(err) = err {
+fn handle_error(err: FileoramaError, msg: &crossbeam_channel::Sender<RecvMsg>) {
+    if let FileoramaError::FileError(err) = err {
         let file_error = format!("{err:#?}");
         if let Err(send_err) = msg.send(RecvMsg::Error(err.into())) {
             error!(
@@ -366,7 +359,7 @@ fn get_component_name<'a>(component: &'a Component, had_prefix: &mut bool) -> Co
 }
 
 // Add a new node to the vfs at a specific index and get the new node index back
-fn add_new_node(state: &mut VfsState, index: usize, new_node: Node) -> usize {
+fn add_new_node(state: &mut State, index: usize, new_node: Node) -> usize {
     //let mut node = &state.nodes[index];
     let new_index = state.nodes.len();
     state.nodes.push(new_node);
@@ -374,7 +367,7 @@ fn add_new_node(state: &mut VfsState, index: usize, new_node: Node) -> usize {
     new_index
 }
 
-fn add_path_to_vfs(vfs: &mut VfsState, index: usize, path: &Path) -> (usize, usize) {
+fn add_path_to_vfs(vfs: &mut State, index: usize, path: &Path) -> (usize, usize) {
     let mut count = 0;
     let mut prefix = false;
     let mut current_index = index;
@@ -396,7 +389,7 @@ fn add_path_to_vfs(vfs: &mut VfsState, index: usize, path: &Path) -> (usize, usi
 }
 
 fn add_files_dirs_to_vfs(
-    vfs: &mut VfsState,
+    vfs: &mut State,
     components: &[Component],
     in_index: usize,
     files_dirs: FilesDirs,
@@ -487,7 +480,7 @@ impl<'a> Loader<'a> {
     }
 
     // Search the vfs if we already have the path or parts of it to figure out how it should be loaded
-    fn find_node(&mut self, vfs: &VfsState) {
+    fn find_node(&mut self, vfs: &State) {
         let components = &self.path_components[self.component_index..];
         let mut has_local_parent_driver = false;
         let mut found_driver = false;
@@ -549,7 +542,7 @@ impl<'a> Loader<'a> {
     }
 
     // Walk the url backwards to find a driver
-    fn find_driver_url(&mut self, vfs: &mut VfsState, drivers: &VfsDrivers) {
+    fn find_driver_url(&mut self, vfs: &mut State, drivers: &Drivers) {
         let components = &self.path_components[self.component_index..];
         let mut p: PathBuf = components.iter().collect();
         let mut current_path: String = p.to_string_lossy().into();
@@ -602,9 +595,9 @@ impl<'a> Loader<'a> {
     // Find a driver given input data at a node. If a driver is found we switch to state LoadFromDriver
     fn find_driver_data(
         &mut self,
-        vfs: &mut VfsState,
-        drivers: &VfsDrivers,
-    ) -> Result<(), InternalError> {
+        vfs: &mut State,
+        drivers: &Drivers,
+    ) -> Result<(), FileoramaError> {
         let node_data = self.data.as_ref().unwrap();
 
         for d in &*drivers.read().unwrap() {
@@ -636,7 +629,7 @@ impl<'a> Loader<'a> {
     }
 
     // Walk a path backwards and try to load the url given a driver
-    fn load_from_driver(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
+    fn load_from_driver(&mut self, vfs: &mut State) -> Result<(), FileoramaError> {
         let components = &self.path_components[self.component_index..];
 
         let mut p: PathBuf = components.iter().collect();
@@ -707,7 +700,7 @@ impl<'a> Loader<'a> {
     // the active node doesn't have one. This happens for example if we try to load from zip/file.bin
     // The current node would be "file.bin" but we need to load the data from the parent so the driver
     // will see the "file.bin" as input path
-    fn load_from_node(&mut self, vfs: &mut VfsState) -> Result<(), InternalError> {
+    fn load_from_node(&mut self, vfs: &mut State) -> Result<(), FileoramaError> {
         let mut node_index = self.node_index;
 
         // if we have travered to the end of the path and we know that it's a directory we don't need to ask the driver
@@ -778,13 +771,13 @@ impl<'a> Loader<'a> {
 
     fn add_dir_to_vfs(
         &mut self,
-        vfs: &mut VfsState,
+        vfs: &mut State,
         comp_index: usize,
         current_path: &str,
         progress: &mut Progress,
         driver: usize,
         index: usize,
-    ) -> Result<(), InternalError> {
+    ) -> Result<(), FileoramaError> {
         let mut node_index = index;
         let components = &self.path_components[comp_index..];
 
@@ -813,9 +806,9 @@ impl<'a> Loader<'a> {
     // Traverses the children of a node, gets all the names and sents it back to the host
     fn send_directory_for_node(
         &mut self,
-        vfs: &VfsState,
+        vfs: &State,
         node_index: usize,
-    ) -> Result<(), InternalError> {
+    ) -> Result<(), FileoramaError> {
         let source_node = &vfs.nodes[node_index];
         let mut files = Vec::with_capacity(source_node.nodes.len());
         let mut dirs = Vec::with_capacity(source_node.nodes.len());
@@ -834,7 +827,7 @@ impl<'a> Loader<'a> {
         Ok(())
     }
 
-    fn send_data(&mut self, vfs: &mut VfsState, data: Box<[u8]>) -> Result<(), InternalError> {
+    fn send_data(&mut self, vfs: &mut State, data: Box<[u8]>) -> Result<(), FileoramaError> {
         // check if the cache is full, in that case remove the last entry
         if vfs.cached_data.len() >= MAX_CACHE_COUNT {
             vfs.cached_data.remove(0);
@@ -857,7 +850,7 @@ impl<'a> Loader<'a> {
 }
 
 /*
-fn print_tree(state: &VfsState, index: u32, _parent: u32, indent: usize) {
+fn print_tree(state: &State, index: u32, _parent: u32, indent: usize) {
     let node = &state.nodes[index as usize];
 
     println!(
@@ -875,11 +868,11 @@ fn print_tree(state: &VfsState, index: u32, _parent: u32, indent: usize) {
 */
 
 pub(crate) fn load(
-    vfs: &mut VfsState,
+    vfs: &mut State,
     path: &str,
     msg: &crossbeam_channel::Sender<RecvMsg>,
-    drivers: &VfsDrivers,
-) -> Result<(), InternalError> {
+    drivers: &Drivers,
+) -> Result<(), FileoramaError> {
     let mut loader = Loader::new(path, msg);
 
     // first we look in the cache if we have data there and then send that back
@@ -911,7 +904,7 @@ pub(crate) fn load(
     Ok(())
 }
 
-fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg, drivers: &VfsDrivers) {
+fn handle_msg(vfs: &mut State, _name: &str, msg: &SendMsg, drivers: &Drivers) {
     match msg {
         SendMsg::LoadUrl(path, _node_index, msg) => {
             if let Err(e) = load(vfs, path, msg, drivers) {
@@ -920,7 +913,7 @@ fn handle_msg(vfs: &mut VfsState, _name: &str, msg: &SendMsg, drivers: &VfsDrive
         }
         // Add a new driver. These drivers are pushed at the front of the list which
         // means that they will be tried first when looking for new drivers
-        SendMsg::AddVfsDriver(driver) => {
+        SendMsg::AddDriver(driver) => {
             let mut drivers = drivers.write().unwrap();
             drivers.insert(0, driver.create_instance());
         }

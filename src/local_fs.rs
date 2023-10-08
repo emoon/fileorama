@@ -1,4 +1,4 @@
-use crate::{FilesDirs, InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
+use crate::{FilesDirs, FileoramaError, LoadStatus, Progress, Driver, DriverType};
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
@@ -21,7 +21,7 @@ impl LocalFs {
     }
 }
 
-impl VfsDriver for LocalFs {
+impl Driver for LocalFs {
     fn is_remote(&self) -> bool {
         false
     }
@@ -48,17 +48,17 @@ impl VfsDriver for LocalFs {
         false
     }
 
-    fn create_instance(&self) -> VfsDriverType {
+    fn create_instance(&self) -> DriverType {
         Box::new(LocalFs { root: "".into() })
     }
 
-    fn create_from_url(&self, path: &str) -> Option<VfsDriverType> {
+    fn create_from_url(&self, path: &str) -> Option<DriverType> {
         trace!("Created driver at {}", path);
         Some(Box::new(LocalFs { root: path.into() }))
     }
 
     // As above function will always return true this will never be called
-    fn create_from_data(&self, _data: Box<[u8]>) -> Option<VfsDriverType> {
+    fn create_from_data(&self, _data: Box<[u8]>) -> Option<DriverType> {
         None
     }
 
@@ -67,7 +67,7 @@ impl VfsDriver for LocalFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, InternalError> {
+    ) -> Result<LoadStatus, FileoramaError> {
         let path = if path.is_empty() {
             self.root.clone()
         } else {
@@ -116,7 +116,7 @@ impl VfsDriver for LocalFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, InternalError> {
+    ) -> Result<FilesDirs, FileoramaError> {
         progress.set_step(1);
         let mut dirs = Vec::with_capacity(256);
         let mut files = Vec::with_capacity(256);

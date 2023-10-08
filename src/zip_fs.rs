@@ -1,4 +1,4 @@
-use crate::{FilesDirs, InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
+use crate::{FilesDirs, FileoramaError, LoadStatus, Progress, Driver, DriverType};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::File;
@@ -41,7 +41,7 @@ impl ZipFs {
         path: &str,
         progress: &mut Progress,
         filenames: &mut dyn Iterator<Item = &str>,
-    ) -> Result<FilesDirs, InternalError> {
+    ) -> Result<FilesDirs, FileoramaError> {
         let mut paths = HashSet::<String>::new();
         let mut files = Vec::with_capacity(256);
 
@@ -96,7 +96,7 @@ impl ZipFs {
     }
 }
 
-impl VfsDriver for ZipFs {
+impl Driver for ZipFs {
     /// We return true here as we don't know
     fn is_remote(&self) -> bool {
         true
@@ -111,8 +111,8 @@ impl VfsDriver for ZipFs {
         !url.contains(FTP_CHECK)
     }
 
-    // Create a new instance given data. The VfsDriver will take ownership of the data
-    fn create_instance(&self) -> VfsDriverType {
+    // Create a new instance given data. The Driver will take ownership of the data
+    fn create_instance(&self) -> DriverType {
         Box::new(ZipFs::new())
     }
 
@@ -122,8 +122,8 @@ impl VfsDriver for ZipFs {
         ZipArchive::new(c).is_ok()
     }
 
-    // Create a new instance given data. The VfsDriver will take ownership of the data
-    fn create_from_data(&self, data: Box<[u8]>) -> Option<VfsDriverType> {
+    // Create a new instance given data. The Driver will take ownership of the data
+    fn create_from_data(&self, data: Box<[u8]>) -> Option<DriverType> {
         let a = match ZipArchive::new(std::io::Cursor::new(data)) {
             Ok(a) => a,
             Err(e) => {
@@ -157,7 +157,7 @@ impl VfsDriver for ZipFs {
     }
 
     /// Used when creating an instance of the driver with a path to load from
-    fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
+    fn create_from_url(&self, url: &str) -> Option<DriverType> {
         let read_file = match File::open(url) {
             Ok(f) => f,
             Err(e) => {
@@ -184,7 +184,7 @@ impl VfsDriver for ZipFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, InternalError> {
+    ) -> Result<LoadStatus, FileoramaError> {
         if path.is_empty() {
             return Ok(LoadStatus::Directory);
         }
@@ -244,7 +244,7 @@ impl VfsDriver for ZipFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, InternalError> {
+    ) -> Result<FilesDirs, FileoramaError> {
         match &self.data {
             ZipInternal::FileReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
             ZipInternal::MemReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),

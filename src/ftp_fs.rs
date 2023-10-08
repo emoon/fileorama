@@ -1,10 +1,7 @@
-use crate::{FilesDirs, InternalError, LoadStatus, Progress, VfsDriver, VfsDriverType};
+use crate::{FilesDirs, FileoramaError, LoadStatus, Progress, Driver, DriverType};
 use ftp::{FtpError, FtpStream};
 use log::error;
 use std::path::MAIN_SEPARATOR;
-//use std::collections::HashSet;
-//use std::fs::File;
-//use std::io::{Cursor, Read, Write};
 
 // This is kinda ugly, but better than testing non-supported paths on a remote server
 #[cfg(target_os = "windows")]
@@ -49,7 +46,7 @@ impl FtpFs {
     }
 }
 
-impl VfsDriver for FtpFs {
+impl Driver for FtpFs {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool {
         true
@@ -65,8 +62,8 @@ impl VfsDriver for FtpFs {
         url.starts_with(FTP_URL) || url.starts_with("ftp.")
     }
 
-    // Create a new instance given data. The VfsDriver will take ownership of the data
-    fn create_instance(&self) -> VfsDriverType {
+    // Create a new instance given data. The Driver will take ownership of the data
+    fn create_instance(&self) -> DriverType {
         Box::new(FtpFs::new())
     }
 
@@ -76,7 +73,7 @@ impl VfsDriver for FtpFs {
     }
 
     // Create a new instance given data
-    fn create_from_data(&self, _data: Box<[u8]>) -> Option<VfsDriverType> {
+    fn create_from_data(&self, _data: Box<[u8]>) -> Option<DriverType> {
         None
     }
 
@@ -96,7 +93,7 @@ impl VfsDriver for FtpFs {
     }
 
     /// Used when creating an instance of the driver with a path to load from
-    fn create_from_url(&self, url: &str) -> Option<VfsDriverType> {
+    fn create_from_url(&self, url: &str) -> Option<DriverType> {
         if let Some(url) = Self::find_server_name(url) {
             let url_with_port = if url.contains(':') {
                 url.to_owned()
@@ -126,7 +123,7 @@ impl VfsDriver for FtpFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<LoadStatus, InternalError> {
+    ) -> Result<LoadStatus, FileoramaError> {
         let conn = self.data.as_mut().unwrap();
 
         // We get a listing of the files first here because if we try to do 'SIZE' on a directory
@@ -172,7 +169,7 @@ impl VfsDriver for FtpFs {
         &mut self,
         path: &str,
         progress: &mut Progress,
-    ) -> Result<FilesDirs, InternalError> {
+    ) -> Result<FilesDirs, FileoramaError> {
         let conn = self.data.as_mut().unwrap();
 
         progress.set_step(2);
