@@ -1,4 +1,4 @@
-use crate::{FilesDirs, Error, LoadStatus, Progress, Driver, DriverType};
+use crate::{FilesDirs, Error, LoadStatus, Progress, IoDriver, IoDriverType};
 use ftp::{FtpError, FtpStream};
 use log::error;
 use std::path::MAIN_SEPARATOR;
@@ -46,7 +46,7 @@ impl FtpFs {
     }
 }
 
-impl Driver for FtpFs {
+impl IoDriver for FtpFs {
     /// This indicates that the file system is remote (such as ftp, https) and has no local path
     fn is_remote(&self) -> bool {
         true
@@ -63,20 +63,11 @@ impl Driver for FtpFs {
     }
 
     // Create a new instance given data. The Driver will take ownership of the data
-    fn create_instance(&self) -> DriverType {
+    fn create_instance(&self) -> IoDriverType {
         Box::new(FtpFs::new())
     }
 
-    // FtpFs doesn't to create from data
-    fn can_load_from_data(&self, _data: &[u8]) -> bool {
-        false
-    }
-
-    // Create a new instance given data
-    fn create_from_data(&self, _data: Box<[u8]>) -> Option<DriverType> {
-        None
-    }
-
+    /*
     // Get some data in and returns true if driver can be mounted from it
     fn can_load_from_url(&self, url: &str) -> bool {
         // Only supports urls that starts with ftp
@@ -91,9 +82,10 @@ impl Driver for FtpFs {
             !url.contains(MAIN_SEPARATOR)
         }
     }
+    */
 
     /// Used when creating an instance of the driver with a path to load from
-    fn create_from_url(&self, url: &str) -> Option<DriverType> {
+    fn create_from_url(&self, url: &str) -> Option<IoDriverType> {
         if let Some(url) = Self::find_server_name(url) {
             let url_with_port = if url.contains(':') {
                 url.to_owned()
@@ -119,7 +111,7 @@ impl Driver for FtpFs {
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(
+    fn load(
         &mut self,
         path: &str,
         progress: &mut Progress,

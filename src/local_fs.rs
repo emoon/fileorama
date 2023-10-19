@@ -1,4 +1,4 @@
-use crate::{FilesDirs, Error, LoadStatus, Progress, Driver, DriverType};
+use crate::{FilesDirs, Error, LoadStatus, Progress, IoDriver, IoDriverType};
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
@@ -21,7 +21,7 @@ impl LocalFs {
     }
 }
 
-impl Driver for LocalFs {
+impl IoDriver for LocalFs {
     fn is_remote(&self) -> bool {
         false
     }
@@ -36,34 +36,21 @@ impl Driver for LocalFs {
         // we don't support url style paths like ftp:// http:// etc.
         !path.contains(":/")
     }
-    // Get some data in and returns true if driver can be mounted from it
-    fn can_load_from_url(&self, url: &str) -> bool {
-        let t = std::fs::metadata(url).is_ok();
-        trace!("Can load from path {} : {}", url, t);
-        t
-    }
 
-    // Local filesystem can't be loaded from data
-    fn can_load_from_data(&self, _data: &[u8]) -> bool {
-        false
-    }
-
-    fn create_instance(&self) -> DriverType {
+    fn create_instance(&self) -> IoDriverType {
         Box::new(LocalFs { root: "".into() })
     }
 
-    fn create_from_url(&self, path: &str) -> Option<DriverType> {
-        trace!("Created driver at {}", path);
-        Some(Box::new(LocalFs { root: path.into() }))
-    }
-
-    // As above function will always return true this will never be called
-    fn create_from_data(&self, _data: Box<[u8]>) -> Option<DriverType> {
-        None
+    fn create_from_url(&self, path: &str) -> Option<IoDriverType> {
+        if std::fs::metadata(path).is_ok() {
+            Some(Box::new(LocalFs { root: path.into() }))
+        } else {
+            None
+        }
     }
 
     /// Read a file from the local filesystem.
-    fn load_url(
+    fn load(
         &mut self,
         path: &str,
         progress: &mut Progress,

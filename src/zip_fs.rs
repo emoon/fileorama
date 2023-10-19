@@ -1,7 +1,6 @@
-use crate::{FilesDirs, Error, LoadStatus, Progress, Driver, DriverType};
+use crate::{FilesDirs, Error, LoadStatus, Progress, MemoryDriver, MemoryDriverType};
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
 
@@ -20,7 +19,6 @@ use std::{println as trace, println as error};
 
 #[derive(Debug)]
 enum ZipInternal {
-    FileReader(ZipArchive<File>),
     MemReader(ZipArchive<Cursor<Box<[u8]>>>),
     None,
 }
@@ -42,6 +40,8 @@ impl ZipFs {
         progress: &mut Progress,
         filenames: &mut dyn Iterator<Item = &str>,
     ) -> Result<FilesDirs, Error> {
+        trace!("ZIP get_dirs: {}", path);
+
         let mut paths = HashSet::<String>::new();
         let mut files = Vec::with_capacity(256);
 
@@ -96,34 +96,24 @@ impl ZipFs {
     }
 }
 
-impl Driver for ZipFs {
-    /// We return true here as we don't know
-    fn is_remote(&self) -> bool {
-        true
-    }
-
+impl MemoryDriver for ZipFs {
     fn name(&self) -> &'static str {
         "zip_fs"
     }
 
-    /// If the driver supports a certain url
-    fn supports_url(&self, url: &str) -> bool {
-        !url.contains(FTP_CHECK)
-    }
-
     // Create a new instance given data. The Driver will take ownership of the data
-    fn create_instance(&self) -> DriverType {
+    fn create_instance(&self) -> MemoryDriverType {
         Box::new(ZipFs::new())
     }
 
     // Get some data in and returns true if driver can be mounted from it
-    fn can_load_from_data(&self, data: &[u8]) -> bool {
+    fn can_create_from_data(&self, data: &[u8]) -> bool {
         let c = std::io::Cursor::new(data);
         ZipArchive::new(c).is_ok()
     }
 
     // Create a new instance given data. The Driver will take ownership of the data
-    fn create_from_data(&self, data: Box<[u8]>) -> Option<DriverType> {
+    fn create_from_data(&self, data: Box<[u8]>) -> Option<MemoryDriverType> {
         let a = match ZipArchive::new(std::io::Cursor::new(data)) {
             Ok(a) => a,
             Err(e) => {
@@ -137,74 +127,31 @@ impl Driver for ZipFs {
         }))
     }
 
-    // Get some data in and returns true if driver can be mounted from it
-    fn can_load_from_url(&self, url: &str) -> bool {
-        if std::fs::metadata(url).is_err() {
-            return false;
-        }
-
-        let read_file = match File::open(url) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("ZipFs File Error: {:}", e);
-                return false;
-            }
-        };
-
-        let t = zip::ZipArchive::new(read_file).is_ok();
-        trace!("zip_fs: can load from url {} - {}", url, t);
-        t
-    }
-
-    /// Used when creating an instance of the driver with a path to load from
-    fn create_from_url(&self, url: &str) -> Option<DriverType> {
-        let read_file = match File::open(url) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("ZipFs File Error: {:}", e);
-                return None;
-            }
-        };
-
-        let a = match ZipArchive::new(read_file) {
-            Ok(a) => a,
-            Err(e) => {
-                error!("ZipFs Error: {:}", e);
-                return None;
-            }
-        };
-
-        Some(Box::new(ZipFs {
-            data: ZipInternal::FileReader(a),
-        }))
-    }
-
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load_url(
+    fn load(
         &mut self,
-        path: &str,
+        local_path: &str,
         progress: &mut Progress,
     ) -> Result<LoadStatus, Error> {
-        if path.is_empty() {
+        if local_path.is_empty() {
             return Ok(LoadStatus::Directory);
         }
 
         // The zip loader doesn't support \ for internal paths so replace with /
-        let path: Cow<str> = if !path.contains('\\') {
-            path.into()
+        let local_path: Cow<str> = if !local_path.contains('\\') {
+            local_path.into()
         } else {
-            path.replace('\\', "/").into()
+            local_path.replace('\\', "/").into()
         };
 
         let read_file = match &mut self.data {
-            ZipInternal::FileReader(a) => a.by_name(&path),
-            ZipInternal::MemReader(a) => a.by_name(&path),
+            ZipInternal::MemReader(a) => a.by_name(&local_path),
             ZipInternal::None => return Ok(LoadStatus::NotFound),
         };
 
         let mut file = match read_file {
             Err(_) => {
-                trace!("file not found: {}", path);
+                trace!("file not found: {}", local_path);
                 return Ok(LoadStatus::NotFound);
             }
             Ok(f) => f,
@@ -242,12 +189,11 @@ impl Driver for ZipFs {
 
     fn get_directory_list(
         &mut self,
-        path: &str,
+        local_path: &str,
         progress: &mut Progress,
     ) -> Result<FilesDirs, Error> {
         match &self.data {
-            ZipInternal::FileReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
-            ZipInternal::MemReader(a) => Self::get_dirs(path, progress, &mut a.file_names()),
+            ZipInternal::MemReader(a) => Self::get_dirs(local_path, progress, &mut a.file_names()),
             ZipInternal::None => Ok(FilesDirs::default()),
         }
     }
