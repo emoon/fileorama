@@ -1,4 +1,4 @@
-use crate::{FilesDirs, Error, LoadStatus, Progress, IoDriver, IoDriverType};
+use crate::{Error, FilesDirs, IoDriver, IoDriverType, LoadStatus, Progress};
 use ftp::{FtpError, FtpStream};
 use log::error;
 use std::path::MAIN_SEPARATOR;
@@ -111,11 +111,7 @@ impl IoDriver for FtpFs {
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load(
-        &mut self,
-        path: &str,
-        progress: &mut Progress,
-    ) -> Result<LoadStatus, Error> {
+    fn load(&mut self, path: &str, progress: &mut Progress) -> Result<LoadStatus, Error> {
         let conn = self.data.as_mut().unwrap();
 
         // We get a listing of the files first here because if we try to do 'SIZE' on a directory

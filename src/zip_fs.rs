@@ -1,4 +1,4 @@
-use crate::{FilesDirs, Error, LoadStatus, Progress, MemoryDriver, MemoryDriverType};
+use crate::{Error, FilesDirs, LoadStatus, MemoryDriver, MemoryDriverType, Progress};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
@@ -128,11 +128,7 @@ impl MemoryDriver for ZipFs {
     }
 
     /// Returns a handle which updates the progress and returns the loaded data. This will try to
-    fn load(
-        &mut self,
-        local_path: &str,
-        progress: &mut Progress,
-    ) -> Result<LoadStatus, Error> {
+    fn load(&mut self, local_path: &str, progress: &mut Progress) -> Result<LoadStatus, Error> {
         if local_path.is_empty() {
             return Ok(LoadStatus::Directory);
         }

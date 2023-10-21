@@ -1,4 +1,4 @@
-use crate::{FilesDirs, Error, LoadStatus, Progress, IoDriver, IoDriverType};
+use crate::{Error, FilesDirs, IoDriver, IoDriverType, LoadStatus, Progress};
 use std::{fs::File, io::Read, path::PathBuf};
 use walkdir::WalkDir;
 
@@ -50,11 +50,7 @@ impl IoDriver for LocalFs {
     }
 
     /// Read a file from the local filesystem.
-    fn load(
-        &mut self,
-        path: &str,
-        progress: &mut Progress,
-    ) -> Result<LoadStatus, Error> {
+    fn load(&mut self, path: &str, progress: &mut Progress) -> Result<LoadStatus, Error> {
         let path = if path.is_empty() {
             self.root.clone()
         } else {
@@ -63,7 +59,12 @@ impl IoDriver for LocalFs {
 
         trace!("trying loading from {:?}", path);
 
-        let metadata = std::fs::metadata(&path)?;
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => { 
+                return Err(Error::FileDirNotFound);
+            }
+        };
 
         if metadata.is_dir() {
             trace!("load_url: {:?} is a directory", path);
